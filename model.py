@@ -2,6 +2,18 @@ import torch
 from torch import nn
 from model_args import Qwen3ModelArgs
 
+def _RoPE(vector, cosine, sine, head_dim):
+    split = torch.split(vector, head_dim // 2, dim = -1)
+    rope_pairs = torch.stack((split[0], split[1]), dim = -1)
+    
+    cosine, sine = cosine[:vector.shape[1]], sine[:vector.shape[1]]
+    cosine, sine = cosine[None, :, None, :], sine[None, :, None, :]
+    
+    newx = rope_pairs[..., 0] * cosine - rope_pairs[..., 1] * sine
+    newy = rope_pairs[..., 0] * sine + rope_pairs[..., 1] * cosine
+    
+    return torch.cat((newx, newy), dim=-1)
+     
 class Qwen3Model(nn.Module):
     def _rotation(self):
             indices = torch.arange(self.model_args.head_dim // 2)
@@ -30,17 +42,68 @@ class Qwen3Model(nn.Module):
 
         self.register_buffer("rope_cosine_values", cosine, persistent=False)
         self.register_buffer("rope_sine_values", sine, persistent=False)
-          
-    def _RoPE(self, vector): 
-        split = torch.split(vector, self.model_args.head_dim // 2, dim = -1)
-        rope_pairs = torch.stack((split[0], split[1]), dim = -1)
 
-        cosine, sine = self.rope_cosine_values, self.rope_sine_values
-        cosine, sine = cosine[:vector.shape[1]], sine[:vector.shape[1]]
-        cosine, sine = cosine[None, :, None, :], sine[None, :, None, :]
+class GroupQueryAttention(nn.Module):
+    def __init__(self, model_args: Gwen3ModelArgs):
+        super().__init__()
+        self.model_args = model_args
 
-        newx = rope_pairs[..., 0] * cosine - rope_pairs[..., 1] * sine
-        newy = rope_pairs[..., 0] * sine + rope_pairs[..., 1] * cosine
+         # im not entirely sure why qwen's dim in multi head is larger than the original dimension
 
-        return torch.cat((newx, newy), dim=-1)
+        self.Wq = nn.Linear(self.model_args.dim, self.model_args.numheads * self.model_args.head_dim, bias = False)
+        self.Wk = nn.Linear(self.model_args.dim, self.model_args.numkvheads * self.model_args.head_dim, bias = False)
+        self.Wv = nn.Linear(self.model_args.dim, self.model_args.numkvheads * self.model_args.head_dim, bias = False)
+
+        self.output = nn.Linear(self.model_args.numheads * self.model_args.head_dim, self.model_args.dim, bias = False)
+
+        self.rmsNormQ = nn.RMSNorm(128, eps = model_args.norm_eps)
+        self.rmsNormK = nn.RMSNorm(128, eps = model_args.norm_eps)
+
+    def forward(self, tensor, cosine, sine):
+        Q = torch.reshape(self.Wq, (tensor.shape[0], tensor.shape[1], self.model_args.numheads, self.model_args.head_dim))
+        K = torch.reshape(self.Wk, (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
+        V = torch.reshape(self.Wv, (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
+
+        normalizedQ = self.rmsNormQ(Q)
+        normalizedK = self.rmsNormK(K)
+
+        rotatedQ = _RoPE(normalizedQ, cosine, sine, self.model_args.head_dim)
+        rotatedK = _RoPE(normalizedK, cosine, sine, self.model_args.head_dim)
+
+        headsRatio = self.model_args.numheads // self.model_args.numkvheads
+
+        # we have more regular attention heads than KV heads under qwen's grouped query attention.
+        # as a result, we need to keep all the dims lining up when we multiply
+
+        # one way to do this is just repeat all of the values of KV so that the elementwise multiplication goes smoothly
+        # we can also do some braodcsating shenanigans
+
+        # do some wizardy on the dims to simply be able to matmul Q * K
+
+        reshapedQ = rotatedQ.view(tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, headsRatio, self._model.args.head_dim) 
+        reshapedQ = reshapedQ.permute(0, 2, 3, 1, 4)
+
+        reshapedK = rotatedK.permute(0, 2, 3, 1).unsqueeze(2)
+        reshapedV = V.permute(0,2,1,3).unsqueeze(2)
+
+        attention = reshapedQ @ reshapedK
+        attention = attention / (self.model_args.head_dim) ** 0.5
+
+        # we have to do the manual causal masking and stuff now
+
+        causal_mask = torch.full((tensor.shape[1], tensor.shape[1]), float("-inf"), device = attention.device)
+        causal_mask = torch.triu(causal_mask, diagonal=1)
+
+        attention = attention + causal_mask
+
+        attention = torch.softmax(attention, dim = -1) @ reshapedV
+
+        attention = attention.permute(0, 3, 1, 2, 4)
+        attention = attention.reshape(tensor.shape[0], tensor.shape[1], self.model_args.numheads * self.model_args.head_dim)
+
+        return self.output(attention)
+
+
+
+
 
