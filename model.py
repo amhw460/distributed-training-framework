@@ -102,8 +102,3 @@ class GroupQueryAttention(nn.Module):
         attention = attention.reshape(tensor.shape[0], tensor.shape[1], self.model_args.numheads * self.model_args.head_dim)
 
         return self.output(attention)
-
-
-
-
-

@@ -66,5 +66,22 @@ class MoE(nn.Module):
 
     topkweights, topkindices, expertlogits = self.router(tokenstates)
 
-    output = nn.zeros(batch * seqlen, self.model_args.dim)
+    output = torch.zeros(batch * seqlen, self.model_args.dim, device = tokens.device)
+
+    # for all experts, figure out what tokens have it as best expert, and process thema ll
+    # there is a more optimal way to do things but i can figure it out later to be honest
+
+    for expert in range(self.model_args.experts):
+      tokenindices, whichoftopk = torch.where(topkindices == expert)
+
+      if tokenindices.numel() == 0: continue
+
+      toks, weights = tokenstates[tokenindices], topkweights[tokenindices, whichoftopk]
+
+      weightedoutput = weights.unsqueeze(-1) * self.experts[expert](toks)
+
+      output = output.index_add(0, tokenindices, weightedoutput)
+
+    output = output.reshape(tokens.shape)
+    return output
 
