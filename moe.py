@@ -45,6 +45,26 @@ class Router(nn.Module):
     topkweights = topkweights / topkweights.sum(dim = -1, keepdim = True)
 
     return topkweights, topkindices, expertlogits
-  
 
+class MoE(nn.Module):
+  def __init__(self, model_args):
+    super().__init__()
+
+    self.model_args = model_args
+    self.router = Router(model_args)
+
+    self.experts = nn.ModuleList([Expert(model_args) for _ in range(model_args.experts)])
+
+  def forward(self, tokens):
+    # states of all of the tokens at once
+
+    # flatten
+    batch = tokens.shape[0]
+    seqlen = tokens.shape[1]
+
+    tokenstates = tokens.reshape(tokens.shape[0] * tokens.shape[1], tokens.shape[2])
+
+    topkweights, topkindices, expertlogits = self.router(tokenstates)
+
+    output = nn.zeros(batch * seqlen, self.model_args.dim)
 
