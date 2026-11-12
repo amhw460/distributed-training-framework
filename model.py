@@ -44,7 +44,7 @@ class Qwen3Model(nn.Module):
         self.register_buffer("rope_sine_values", sine, persistent=False)
 
 class GroupQueryAttention(nn.Module):
-    def __init__(self, model_args: Gwen3ModelArgs):
+    def __init__(self, model_args: Qwen3ModelArgs):
         super().__init__()
         self.model_args = model_args
 
@@ -56,8 +56,8 @@ class GroupQueryAttention(nn.Module):
 
         self.output = nn.Linear(self.model_args.numheads * self.model_args.head_dim, self.model_args.dim, bias = False)
 
-        self.rmsNormQ = nn.RMSNorm(128, eps = model_args.norm_eps)
-        self.rmsNormK = nn.RMSNorm(128, eps = model_args.norm_eps)
+        self.rmsNormQ = nn.RMSNorm(self.model_args.head_dim, eps = model_args.norm_eps)
+        self.rmsNormK = nn.RMSNorm(self.model_args.head_dim, eps = model_args.norm_eps)
 
     def forward(self, tensor, cosine, sine):
         Q = torch.reshape(self.Wq, (tensor.shape[0], tensor.shape[1], self.model_args.numheads, self.model_args.head_dim))
@@ -80,7 +80,7 @@ class GroupQueryAttention(nn.Module):
 
         # do some wizardy on the dims to simply be able to matmul Q * K
 
-        reshapedQ = rotatedQ.view(tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, headsRatio, self._model.args.head_dim) 
+        reshapedQ = rotatedQ.view(tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, headsRatio, self._model_args.head_dim) 
         reshapedQ = reshapedQ.permute(0, 2, 3, 1, 4)
 
         reshapedK = rotatedK.permute(0, 2, 3, 1).unsqueeze(2)

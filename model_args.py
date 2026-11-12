@@ -34,7 +34,7 @@ class Qwen3ModelArgs:
     dense_params = total_params - expert_params
     active_params = dense_params + expert_params * self.k // self.experts
 
-    flops_per_token = (6 * active_params) + (6 * self.numlayers * sequence_len 
+    flops_per_token = (6 * active_params) + (12 * self.numlayers * sequence_len 
                                              * self.numheads * self.head_dim)
 
     return total_params, active_params, flops_per_token
