@@ -1,6 +1,6 @@
 # Distributed Training Framework
 
-Building a distributed training framework from scratch using Qwen3-MoE.
+building a distributed training framework from scratch using Qwen3-MoE, in style of TorchTitan
+currently: implemented Qwen3 MOE (basically from scratch)
 
-## TODO
-- [ ] Implement GQA
+todo: all the training things
