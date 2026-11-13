@@ -85,9 +85,9 @@ class GroupQueryAttention(nn.Module):
         self.rmsNormK = nn.RMSNorm(self.model_args.head_dim, eps = model_args.norm_eps)
 
     def forward(self, tensor, cosine, sine):
-        Q = torch.reshape(self.Wq, (tensor.shape[0], tensor.shape[1], self.model_args.numheads, self.model_args.head_dim))
-        K = torch.reshape(self.Wk, (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
-        V = torch.reshape(self.Wv, (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
+        Q = torch.reshape(self.Wq(tensor), (tensor.shape[0], tensor.shape[1], self.model_args.numheads, self.model_args.head_dim))
+        K = torch.reshape(self.Wk(tensor), (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
+        V = torch.reshape(self.Wv(tensor), (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
 
         normalizedQ = self.rmsNormQ(Q)
         normalizedK = self.rmsNormK(K)
@@ -150,7 +150,7 @@ class Transformer(nn.Module):
 
          residual = tokens + attention
 
-         secondnorm = self.secondnorm(attention)
+         secondnorm = self.secondnorm(residual)
          ffn = self.moe(secondnorm) 
 
          residual2 = residual + ffn
