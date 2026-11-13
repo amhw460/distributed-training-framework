@@ -1,3 +1,4 @@
+from moe import MoE
 import torch
 from torch import nn
 from model_args import Qwen3ModelArgs
@@ -43,6 +44,30 @@ class Qwen3Model(nn.Module):
         self.register_buffer("rope_cosine_values", cosine, persistent=False)
         self.register_buffer("rope_sine_values", sine, persistent=False)
 
+        self.transformerlayers = nn.ModuleList([
+             Transformer(self.model_args) for i in range(self.model_args.numlayers)
+        ])
+
+        self.finalRMSnorm = nn.RMSNorm(self.model_args.dim, eps = model_args.norm_eps)
+        self.outputprojection = nn.Linear(self.model_args.dim, self.model_args.vocab_size, bias = False)
+
+    def forward(self, tokenIDs):
+
+         # forward pass: turn into embeddings, run thru transformer blocks, RMSnorm, then output project to the end vocab size
+
+         embeddings = self.embeddings(tokenIDs)
+
+         for layer in self.transformerlayers:
+              embeddings = layer(embeddings, self.rope_cosine_values, self.rope_sine_values)
+
+         embeddings = self.finalRMSnorm(embeddings)
+
+         logits = self.outputprojection(embeddings)
+
+         return logits
+
+
+
 class GroupQueryAttention(nn.Module):
     def __init__(self, model_args: Qwen3ModelArgs):
         super().__init__()
@@ -80,7 +105,7 @@ class GroupQueryAttention(nn.Module):
 
         # do some wizardy on the dims to simply be able to matmul Q * K
 
-        reshapedQ = rotatedQ.view(tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, headsRatio, self._model_args.head_dim) 
+        reshapedQ = rotatedQ.view(tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, headsRatio, self.model_args.head_dim) 
         reshapedQ = reshapedQ.permute(0, 2, 3, 1, 4)
 
         reshapedK = rotatedK.permute(0, 2, 3, 1).unsqueeze(2)
@@ -102,3 +127,32 @@ class GroupQueryAttention(nn.Module):
         attention = attention.reshape(tensor.shape[0], tensor.shape[1], self.model_args.numheads * self.model_args.head_dim)
 
         return self.output(attention)
+
+class Transformer(nn.Module):
+    def __init__(self, model_args):
+          super().__init__()
+
+          self.model_args = model_args
+
+          self.attention = GroupQueryAttention(model_args)
+          self.moe = MoE(model_args)
+
+          self.firstnorm = nn.RMSNorm(model_args.dim, eps = model_args.norm_eps)
+          self.secondnorm = nn.RMSNorm(model_args.dim, eps = model_args.norm_eps)
+
+          #whereas a standard transformer does normalization after some layer, Qwen3 does normalization before it,
+          # "prenorm"
+
+        
+    def forward(self, tokens, cosine, sine):
+         firstnorm = self.firstnorm(tokens)
+         attention = self.attention(firstnorm, cosine, sine)
+
+         residual = tokens + attention
+
+         secondnorm = self.secondnorm(attention)
+         ffn = self.moe(secondnorm) 
+
+         residual2 = residual + ffn
+
+         return residual2
