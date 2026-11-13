@@ -80,7 +80,7 @@ class MoE(nn.Module):
 
       weightedoutput = weights.unsqueeze(-1) * self.experts[expert](toks)
 
-      output = output.index_add(0, tokenindices, weightedoutput(output.dtype))
+      output = output.index_add(0, tokenindices, weightedoutput.to(output.dtype))
 
     output = output.reshape(tokens.shape)
     return output
