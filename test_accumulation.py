@@ -49,7 +49,7 @@ optimizer_large.step()
 # TEST B: Four microbatches of 2 sequences each
 # Use the existing Trainer methods directly.
 config = TrainingConfig(
-    steps=1, localbatchsize=2, globalbatchsize=8, seqlen=8,
+    steps=2, localbatchsize=2, globalbatchsize=8, seqlen=8,
     learningrate=1e-3, maxnorm=1.0, seed=42, warmupsteps=0,
     decayratio=1.0, decaytype="linear", min_lr=0.1,
 )
@@ -57,7 +57,7 @@ trainer = Trainer(model_accum, optimizer_accum, "cpu", config)
 assert trainer.steps_gradient_accumulation == 4
 
 microbatches = list(tokens.split(2, dim=0))
-loss_accum = trainer.training_step(iter(microbatches))
+loss_accum, lr, gradnorm, tokensseen, elapsed, tps = trainer.training_step(iter(microbatches))
 
 # Compare all parameters
 max_diff = max(
@@ -74,10 +74,18 @@ print(f"Maximum parameter diff: {max_diff:.10f}")
 assert abs(loss_large.item() - loss_accum) < 1e-5
 assert max_diff < 1e-5
 assert trainer.trainingstep == 1
+assert tokensseen == 64
+assert lr == 1e-3
+assert gradnorm > 0
+assert elapsed > 0
+assert tps == tokensseen / elapsed
+assert trainer.scheduler.last_epoch == 1
 
 print("PASS: Gradient accumulation matches large-batch training")
 
 # train() should pass one shared iterator through each optimizer update.
 trainer.train(iter(microbatches), 1)
 assert trainer.trainingstep == 2
+assert trainer.tokensseen == 128
+assert trainer.scheduler.last_epoch == 2
 print("PASS: Training loop consumes four microbatches per update")

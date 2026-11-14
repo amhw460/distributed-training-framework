@@ -20,7 +20,7 @@ documents = [
 ]
 
 dataset = TextDataset(documents, tokenizer, sequencelen=16)
-loader = DataLoader(dataset, batch_size=4)
+loader = DataLoader(dataset, batch_size=4, generator = torch.Generator())
 
 # 3. Small Qwen3-MoE model
 args = Qwen3ModelArgs(
