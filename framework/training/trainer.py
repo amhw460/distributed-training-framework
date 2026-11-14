@@ -1,8 +1,7 @@
 import torch
 from torch import nn
 import time
-from lr_scheduler import build_lr_scheduler
-from pathlib import Path
+from framework.training.lr_scheduler import build_lr_scheduler
 
 class Trainer():
   def __init__(self, model, optimizer, device, config):
@@ -97,38 +96,3 @@ class Trainer():
 
       if checkpoint is not None and self.trainingstep % save_every == 0:
         checkpoint.save(self.trainingstep)
-
-
-class Checkpoint():
-  def __init__(self, trainer, folder, dataset):
-    self.trainer = trainer
-    self.folder = Path(folder)
-    self.dataset = dataset
-
-
-  def save(self, step):
-    state = (self.trainer.model.state_dict(), 
-    self.trainer.optimizer.state_dict(), 
-    self.trainer.scheduler.state_dict(), 
-    self.trainer.state(), 
-    torch.get_rng_state(),
-    self.dataset.state())
-
-    self.folder.mkdir(parents=True, exist_ok=True)
-    path = self.folder / f"step-{step}.pt"
-    torch.save(state, path)
-
-  def load(self, path):
-    model, optimizer, scheduler, trainer, rng, dataset = torch.load(path, map_location='cpu', weights_only=True)
-
-    self.trainer.model.load_state_dict(model)
-    self.trainer.optimizer.load_state_dict(optimizer)
-    self.trainer.scheduler.load_state_dict(scheduler)
-    self.trainer.load_state(trainer)
-    torch.set_rng_state(rng)
-    self.dataset.load_state(dataset)
-
-
-
-
-

@@ -4,11 +4,12 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from model import Qwen3Model
-from model_args import Qwen3ModelArgs
-from trainingconfig import TrainingConfig
-from data import build_fineweb_dataset
-from train import Trainer, Checkpoint
+from framework.models.model import Qwen3Model
+from framework.models.model_args import Qwen3ModelArgs
+from framework.training.config import TrainingConfig
+from framework.data.dataset import build_fineweb_dataset
+from framework.training.trainer import Trainer
+from framework.training.checkpoint import Checkpoint
 
 
 def main():

@@ -4,10 +4,10 @@ import copy
 import torch
 import torch.nn.functional as F
 
-from model import Qwen3Model
-from model_args import Qwen3ModelArgs
-from train import Trainer
-from trainingconfig import TrainingConfig
+from framework.models.model import Qwen3Model
+from framework.models.model_args import Qwen3ModelArgs
+from framework.training.trainer import Trainer
+from framework.training.config import TrainingConfig
 
 torch.manual_seed(42)
 
