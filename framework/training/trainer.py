@@ -2,6 +2,8 @@ import torch
 from torch import nn
 import time
 from framework.training.lr_scheduler import build_lr_scheduler
+from framework.distributed import synchronize_gradients
+import torch.distributed as dist
 
 class Trainer():
   def __init__(self, model, optimizer, device, config):
@@ -10,15 +12,20 @@ class Trainer():
     self.optimizer = optimizer
     self.device = device
     self.config = config
-    if self.config.local_batch_size <= 0 or self.config.global_batch_size <= 0 or self.config.global_batch_size % self.config.local_batch_size != 0:
-      raise ValueError("global batch size must be a positive multiple of local batch size")
-
-    self.steps_gradient_accumulation = self.config.global_batch_size // self.config.local_batch_size
+    
 
     self.tokensseen = 0 # tokens processed
     self.trainingstep = 0
 
     self.scheduler = build_lr_scheduler(self.optimizer, self.config)
+
+    world_size = dist.get_world_size() if dist.is_initialized else 1
+
+    if self.config.local_batch_size <= 0 or self.config.global_batch_size <= 0 or self.config.global_batch_size % (self.config.local_batch_size * world_size) != 0:
+      raise ValueError("global batch size must be a positive multiple of local batch size")
+
+    self.steps_gradient_accumulation = self.config.global_batch_size // (self.config.local_batch_size * world_size)
+  
 
   def state(self): # we want to be able to resume if it gets blocked at some point
     return self.trainingstep, self.tokensseen
@@ -63,13 +70,14 @@ class Trainer():
       totalloss += loss
       tokens_this_step += (currentbatch.shape[0] * (currentbatch.shape[1] - 1))
 
+    if world_size > 1 and dist.is_initialized:
+      synchronize_gradients(self.model) # sync after training
+
     avgloss = totalloss / self.steps_gradient_accumulation 
 
     # cliip gradients if they exceed max
     gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.maxnorm)
     gradient_norm = gradient_norm.item()
-
-    
 
     self.optimizer.step()
     self.scheduler.step()
