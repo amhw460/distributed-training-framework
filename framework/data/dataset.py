@@ -14,13 +14,19 @@ tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
 
 from datasets import load_dataset
 
-def build_fineweb_dataset(tokenizer, sequencelen):
+def build_fineweb_dataset(tokenizer, sequencelen, rank=0, world_size=1):
     documents = load_dataset(
         "HuggingFaceFW/fineweb",
         name="sample-10BT",
         split="train",
         streaming=True,
     )
+
+    if world_size > 1:
+        documents = documents.shard(
+            num_shards=world_size,
+            index=rank,
+        )
 
     return TextDataset(documents, tokenizer, sequencelen)
 

@@ -27,7 +27,7 @@ def synchronize_gradients(model):
     if param.grad is None:
       param.grad = gradient
 
-def initialize_distributed(model):
+def initialize_distributed():
   rank = int(os.environ["RANK"])
   local_rank = int(os.environ["LOCAL_RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
@@ -39,6 +39,9 @@ def initialize_distributed(model):
 
   return rank, world_size, device
 
+def cleanup_distributed(): 
+  if dist.is_initialized(): dist.destroy_process_group()
+  
 def synchronize_model(model):
   
   with torch.no_grad():

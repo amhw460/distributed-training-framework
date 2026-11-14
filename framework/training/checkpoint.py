@@ -1,4 +1,5 @@
 from pathlib import Path
+import torch.distributed as dist
 
 import torch
 
@@ -11,6 +12,9 @@ class Checkpoint():
 
 
   def save(self, step):
+    if dist.is_initialized() and dist.get_rank() != 0:
+        return
+        
     state = (self.trainer.model.state_dict(), 
     self.trainer.optimizer.state_dict(), 
     self.trainer.scheduler.state_dict(), 

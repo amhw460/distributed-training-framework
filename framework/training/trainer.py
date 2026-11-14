@@ -19,12 +19,12 @@ class Trainer():
 
     self.scheduler = build_lr_scheduler(self.optimizer, self.config)
 
-    world_size = dist.get_world_size() if dist.is_initialized else 1
+    self.world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    if self.config.local_batch_size <= 0 or self.config.global_batch_size <= 0 or self.config.global_batch_size % (self.config.local_batch_size * world_size) != 0:
+    if self.config.local_batch_size <= 0 or self.config.global_batch_size <= 0 or self.config.global_batch_size % (self.config.local_batch_size * self.world_size) != 0:
       raise ValueError("global batch size must be a positive multiple of local batch size")
 
-    self.steps_gradient_accumulation = self.config.global_batch_size // (self.config.local_batch_size * world_size)
+    self.steps_gradient_accumulation = self.config.global_batch_size // (self.config.local_batch_size * self.world_size)
   
 
   def state(self): # we want to be able to resume if it gets blocked at some point
@@ -70,7 +70,7 @@ class Trainer():
       totalloss += loss
       tokens_this_step += (currentbatch.shape[0] * (currentbatch.shape[1] - 1))
 
-    if world_size > 1 and dist.is_initialized:
+    if self.world_size > 1 and dist.is_initialized():
       synchronize_gradients(self.model) # sync after training
 
     avgloss = totalloss / self.steps_gradient_accumulation 
