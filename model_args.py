@@ -21,6 +21,8 @@ class Qwen3ModelArgs:
   norm_eps: float = 1e-6
   rope_theta: float = 1000000.0
 
+  initializer_range: float = 0.02 # qwen3 initializer range
+
   def _num_params_flops(self, model, sequence_len):
     expert_params = 0
     total_params = 0

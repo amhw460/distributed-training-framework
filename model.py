@@ -51,6 +51,14 @@ class Qwen3Model(nn.Module):
         self.finalRMSnorm = nn.RMSNorm(self.model_args.dim, eps = model_args.norm_eps)
         self.outputprojection = nn.Linear(self.model_args.dim, self.model_args.vocab_size, bias = False)
 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+
+        # using qwens specific weight initialization method to be more 'faithful'
+      if isinstance(module, (nn.Linear, nn.Embedding)):
+        nn.init.normal_(module.weight, mean=0.0, std=self.model_args.initializer_range)
+
     def forward(self, tokenIDs):
 
          # forward pass: turn into embeddings, run thru transformer blocks, RMSnorm, then output project to the end vocab size
@@ -85,9 +93,9 @@ class GroupQueryAttention(nn.Module):
         self.rmsNormK = nn.RMSNorm(self.model_args.head_dim, eps = model_args.norm_eps)
 
     def forward(self, tensor, cosine, sine):
-        Q = torch.reshape(self.Wq, (tensor.shape[0], tensor.shape[1], self.model_args.numheads, self.model_args.head_dim))
-        K = torch.reshape(self.Wk, (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
-        V = torch.reshape(self.Wv, (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
+        Q = torch.reshape(self.Wq(tensor), (tensor.shape[0], tensor.shape[1], self.model_args.numheads, self.model_args.head_dim))
+        K = torch.reshape(self.Wk(tensor), (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
+        V = torch.reshape(self.Wv(tensor), (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
 
         normalizedQ = self.rmsNormQ(Q)
         normalizedK = self.rmsNormK(K)
@@ -121,7 +129,7 @@ class GroupQueryAttention(nn.Module):
 
         attention = attention + causal_mask
 
-        attention = torch.softmax(attention, dim = -1) @ reshapedV
+        attention = torch.softmax(attention, dim=-1, dtype=torch.float32).to(reshapedV.dtype) @ reshapedV
 
         attention = attention.permute(0, 3, 1, 2, 4)
         attention = attention.reshape(tensor.shape[0], tensor.shape[1], self.model_args.numheads * self.model_args.head_dim)
@@ -150,7 +158,7 @@ class Transformer(nn.Module):
 
          residual = tokens + attention
 
-         secondnorm = self.secondnorm(attention)
+         secondnorm = self.secondnorm(residual)
          ffn = self.moe(secondnorm) 
 
          residual2 = residual + ffn
