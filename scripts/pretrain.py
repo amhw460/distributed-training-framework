@@ -33,7 +33,7 @@ def main():
         learningrate=1e-3,
         maxnorm=1.0,
         seed=42,
-        warmupsteps=5,
+        warmupsteps=1,
         decayratio=0.5,
         decaytype="cosine",
         min_lr=0.1,
