@@ -12,6 +12,18 @@ tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
 
 # print(tokenizer.decode(tokens))
 
+from datasets import load_dataset
+
+def build_fineweb_dataset(tokenizer, sequencelen):
+    documents = load_dataset(
+        "HuggingFaceFW/fineweb",
+        name="sample-10BT",
+        split="train",
+        streaming=True,
+    )
+
+    return TextDataset(documents, tokenizer, sequencelen)
+
 class TextDataset(IterableDataset):
   def __init__(self, documents, tokenizer, sequencelen):
     
@@ -28,7 +40,9 @@ class TextDataset(IterableDataset):
     samplestoskip = self.samples_seen
 
     for document in self.documents:
-      tokens = self.tokenizer.encode(document)
+      text = document["text"] if isinstance(document, dict) else document
+      tokens = self.tokenizer.encode(text, add_special_tokens=False)
+      tokens.append(self.tokenizer.eos_token_id)
       buffer.extend(tokens)
 
       while len(buffer) >= self.sequencelen + 1:
