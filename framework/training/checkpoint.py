@@ -2,6 +2,7 @@ from pathlib import Path
 import torch.distributed as dist
 
 import torch
+from framework.fsdp import ShardedLinear
 
 
 class Checkpoint():
@@ -11,7 +12,15 @@ class Checkpoint():
     self.dataset = dataset
 
 
+  def _require_unsharded_model(self):
+    if any(isinstance(module, ShardedLinear) for module in self.trainer.model.modules()):
+      raise RuntimeError(
+        "Checkpoint saving/loading for ShardedLinear is not implemented yet; "
+        "rank-0 checkpoints omit other ranks' weight and optimizer shards."
+      )
+
   def save(self, step):
+    self._require_unsharded_model()
     if dist.is_initialized() and dist.get_rank() != 0:
         return
         
@@ -27,6 +36,7 @@ class Checkpoint():
     torch.save(state, path)
 
   def load(self, path):
+    self._require_unsharded_model()
     model, optimizer, scheduler, trainer, rng, dataset = torch.load(path, map_location='cpu', weights_only=True)
 
     self.trainer.model.load_state_dict(model)
