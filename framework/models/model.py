@@ -1,7 +1,7 @@
-from moe import MoE
+from framework.models.moe import MoE
 import torch
 from torch import nn
-from model_args import Qwen3ModelArgs
+from framework.models.model_args import Qwen3ModelArgs
 
 def _RoPE(vector, cosine, sine, head_dim):
     split = torch.split(vector, head_dim // 2, dim = -1)

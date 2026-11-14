@@ -1,8 +1,9 @@
 import torch
 from torch import nn
 import time
-from lr_scheduler import build_lr_scheduler
-from pathlib import Path
+from framework.training.lr_scheduler import build_lr_scheduler
+from framework.distributed import synchronize_gradients
+import torch.distributed as dist
 
 class Trainer():
   def __init__(self, model, optimizer, device, config):
@@ -11,15 +12,20 @@ class Trainer():
     self.optimizer = optimizer
     self.device = device
     self.config = config
-    if self.config.local_batch_size <= 0 or self.config.global_batch_size <= 0 or self.config.global_batch_size % self.config.local_batch_size != 0:
-      raise ValueError("global batch size must be a positive multiple of local batch size")
-
-    self.steps_gradient_accumulation = self.config.global_batch_size // self.config.local_batch_size
+    
 
     self.tokensseen = 0 # tokens processed
     self.trainingstep = 0
 
     self.scheduler = build_lr_scheduler(self.optimizer, self.config)
+
+    self.world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+    if self.config.local_batch_size <= 0 or self.config.global_batch_size <= 0 or self.config.global_batch_size % (self.config.local_batch_size * self.world_size) != 0:
+      raise ValueError("global batch size must be a positive multiple of local batch size")
+
+    self.steps_gradient_accumulation = self.config.global_batch_size // (self.config.local_batch_size * self.world_size)
+  
 
   def state(self): # we want to be able to resume if it gets blocked at some point
     return self.trainingstep, self.tokensseen
@@ -64,13 +70,14 @@ class Trainer():
       totalloss += loss
       tokens_this_step += (currentbatch.shape[0] * (currentbatch.shape[1] - 1))
 
+    if self.world_size > 1 and dist.is_initialized():
+      synchronize_gradients(self.model) # sync after training
+
     avgloss = totalloss / self.steps_gradient_accumulation 
 
     # cliip gradients if they exceed max
     gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.maxnorm)
     gradient_norm = gradient_norm.item()
-
-    
 
     self.optimizer.step()
     self.scheduler.step()
@@ -97,38 +104,3 @@ class Trainer():
 
       if checkpoint is not None and self.trainingstep % save_every == 0:
         checkpoint.save(self.trainingstep)
-
-
-class Checkpoint():
-  def __init__(self, trainer, folder, dataset):
-    self.trainer = trainer
-    self.folder = Path(folder)
-    self.dataset = dataset
-
-
-  def save(self, step):
-    state = (self.trainer.model.state_dict(), 
-    self.trainer.optimizer.state_dict(), 
-    self.trainer.scheduler.state_dict(), 
-    self.trainer.state(), 
-    torch.get_rng_state(),
-    self.dataset.state())
-
-    self.folder.mkdir(parents=True, exist_ok=True)
-    path = self.folder / f"step-{step}.pt"
-    torch.save(state, path)
-
-  def load(self, path):
-    model, optimizer, scheduler, trainer, rng, dataset = torch.load(path, map_location='cpu', weights_only=True)
-
-    self.trainer.model.load_state_dict(model)
-    self.trainer.optimizer.load_state_dict(optimizer)
-    self.trainer.scheduler.load_state_dict(scheduler)
-    self.trainer.load_state(trainer)
-    torch.set_rng_state(rng)
-    self.dataset.load_state(dataset)
-
-
-
-
-

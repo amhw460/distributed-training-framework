@@ -1,6 +1,6 @@
 import math
 from torch.optim.lr_scheduler import LambdaLR
-from trainingconfig import TrainingConfig
+from framework.training.config import TrainingConfig
 
 
 def build_lr_scheduler(optimizer, config: TrainingConfig):

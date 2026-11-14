@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
-from model import Qwen3Model
-from model_args import Qwen3ModelArgs
+from framework.models.model import Qwen3Model
+from framework.models.model_args import Qwen3ModelArgs
 
 torch.manual_seed(0)
 args = Qwen3ModelArgs(

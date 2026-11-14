@@ -4,15 +4,27 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from model import Qwen3Model
-from model_args import Qwen3ModelArgs
-from trainingconfig import TrainingConfig
-from data import build_fineweb_dataset
-from train import Trainer, Checkpoint
+from framework.models.model import Qwen3Model
+from framework.models.model_args import Qwen3ModelArgs
+from framework.training.config import TrainingConfig
+from framework.data.dataset import build_fineweb_dataset
+from framework.training.trainer import Trainer
+from framework.training.checkpoint import Checkpoint
+
+
+
+from framework.distributed import (
+    initialize_distributed,
+    synchronize_model,
+    cleanup_distributed,
+)
 
 
 def main():
     # Training configuration
+
+    rank, world_size, device = initialize_distributed()
+
     config = TrainingConfig(
         steps=50,
         localbatchsize=2,
@@ -31,7 +43,12 @@ def main():
 
     # Dataset
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    dataset = build_fineweb_dataset(tokenizer, config.seqlen)
+    dataset = build_fineweb_dataset(
+        tokenizer,
+        config.seqlen,
+        rank,
+        world_size,
+    )
     loader = DataLoader(
         dataset,
         batch_size=config.local_batch_size,
@@ -54,11 +71,15 @@ def main():
     )
 
     model = Qwen3Model(args)
+
+    model = model.to(device)
+    synchronize_model(model)
+
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.lr
     )
 
-    trainer = Trainer(model, optimizer, "cpu", config)
+    trainer = Trainer(model, optimizer, device, config)
     checkpoint = Checkpoint(trainer, "checkpoints", dataset)
 
     # Resume if a checkpoint path was supplied
@@ -77,6 +98,7 @@ def main():
         )
         checkpoint.save(trainer.trainingstep)
 
+    cleanup_distributed()
 
 if __name__ == "__main__":
     main()

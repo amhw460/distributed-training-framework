@@ -2,8 +2,8 @@
 import math
 import torch
 
-from trainingconfig import TrainingConfig
-from lr_scheduler import build_lr_scheduler
+from framework.training.config import TrainingConfig
+from framework.training.lr_scheduler import build_lr_scheduler
 
 for decay_type in ["linear", "sqrt", "cosine"]:
     config = TrainingConfig(

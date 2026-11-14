@@ -3,10 +3,10 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from model import Qwen3Model
-from model_args import Qwen3ModelArgs
-from train import Trainer
-from data import TextDataset
+from framework.models.model import Qwen3Model
+from framework.models.model_args import Qwen3ModelArgs
+from framework.training.trainer import Trainer
+from framework.data.dataset import TextDataset
 
 # 1. Tokenizer
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
