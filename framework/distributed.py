@@ -3,6 +3,8 @@ import torch
 from torch import nn
 import torch.distributed as dist
 
+# distributed data paralellism (DDP)
+
 def synchronize_gradients(model):
   total_nodes = dist.get_world_size()
 
@@ -41,7 +43,7 @@ def initialize_distributed():
 
 def cleanup_distributed(): 
   if dist.is_initialized(): dist.destroy_process_group()
-  
+
 def synchronize_model(model):
   
   with torch.no_grad():
