@@ -9,6 +9,9 @@ def synchronize_gradients(model):
   total_nodes = dist.get_world_size()
 
   for name, param in model.named_parameters():
+    if param.name == 'outprojection.weightshard':
+      continue 
+
     has_gradient = False
     if param.grad is not None:
       has_gradient = True
