@@ -104,3 +104,8 @@ def reduce_scatter_gradients(gradients):
   output.div_(total_nodes)
 
   return output
+
+def shard_model(model):
+  model.outputprojection = ShardedLinear(model.outputprojection)
+
+  return model
