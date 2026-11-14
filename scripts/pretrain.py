@@ -10,6 +10,7 @@ from framework.training.config import TrainingConfig
 from framework.data.dataset import build_fineweb_dataset
 from framework.training.trainer import Trainer
 from framework.training.checkpoint import Checkpoint
+from framework.fsdp import shard_model
 
 
 
@@ -74,6 +75,7 @@ def main():
 
     model = model.to(device)
     synchronize_model(model)
+    model = shard_model(model)
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.lr
