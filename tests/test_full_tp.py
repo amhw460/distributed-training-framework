@@ -9,7 +9,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from framework.models.model import Qwen3Model
 from framework.models.model_args import Qwen3ModelArgs
-from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism, paralellize_model
+from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism, paralellize_model, synchronize_tp_head_norm_gradients
 from framework.gradient_clipping import clip_tp_grad_norm_
 
 
@@ -66,6 +66,7 @@ def run():
                     msg=f"Forward outputs mismatch: step={step} micro={micro}")
                 (F.cross_entropy(dense_logits.reshape(-1,args.vocab_size),y.reshape(-1))/2).backward()
                 (F.cross_entropy(tp_logits.reshape(-1,args.vocab_size),y.reshape(-1))/2).backward()
+            synchronize_tp_head_norm_gradients(tp)
             compare(dense,tp,rank,world)
             ref_norm = torch.nn.utils.clip_grad_norm_(dense.parameters(), max_norm=0.1)
             tp_norm = clip_tp_grad_norm_(tp, max_norm=0.1)
