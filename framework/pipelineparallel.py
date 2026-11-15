@@ -2,6 +2,7 @@ import os
 import torch
 from torch import nn
 import torch.distributed as dist
+from framework.gradient_clipping import clip_pp_grad_norm_
 
 class PipelineStage(nn.Module):
   def __init__(self, model, rank, total_nodes):
@@ -71,7 +72,7 @@ def backward_microbatch(x, output, rank, total_nodes, loss=None):
         dist.send(x.grad.contiguous(), dst=rank - 1)
 
 
-def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, dim, device):
+def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, dim, device, max_norm=None):
     # Rank 0 supplies the batch; all ranks need microbatch sizes, last rank needs labels.
     if rank == 0:
         tokens = tokens.to(device=device, dtype=torch.long).contiguous()
@@ -107,6 +108,8 @@ def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, di
     for x, output, loss in reversed(saved):
         backward_microbatch(x, output, rank, total_nodes, loss)
 
+    if max_norm is not None:
+        clip_pp_grad_norm_(stage, max_norm)
     optimizer.step()
     if rank == total_nodes - 1:
         return sum(loss.detach().item() for _, _, loss in saved)
