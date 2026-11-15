@@ -5,6 +5,7 @@ on:
     paths:
       - "framework/**"
       - "tests/test_full_tp.py"
+      - "tests/test_parameter_variations.py"
       - "scripts/pretrain_tp.py"
       - ".github/workflows/test-tp.yml"
   workflow_dispatch:
@@ -28,3 +29,17 @@ jobs:
         env:
           OMP_NUM_THREADS: "1"
         run: torchrun --standalone --nproc-per-node=2 -m scripts.pretrain_tp --synthetic --steps 2
+      - name: Test parameter variations across rank counts and modes
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=1 -m tests.test_parameter_variations --mode tp
+          torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode tp
+          torchrun --standalone --nproc-per-node=4 -m tests.test_parameter_variations --mode tp
+          torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode fsdp
+          torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode ddp
+      - name: Test configurable TP CLI on 3 ranks
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=3 -m scripts.pretrain_tp --synthetic --steps 2 --num-layers 3 --dim 20 --moe-inter-dim 14 --num-heads 6 --num-kv-heads 3 --head-dim 4 --experts 5 --top-k 3 --seq-len 7 --local-batch-size 3 --global-batch-size 9 --vocab-size 53

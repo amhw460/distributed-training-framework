@@ -1,4 +1,4 @@
-"""Train Qwen3-MoE with two-rank tensor parallelism.
+"""Train Qwen3-MoE with configurable tensor parallelism.
 
 Real FineWeb training:
     torchrun --standalone --nproc-per-node=2 -m scripts.pretrain_tp
@@ -56,12 +56,42 @@ def main():
     parser.add_argument("--synthetic", action="store_true", help="Use fake tokens; no downloads")
     parser.add_argument("--steps", type=int, default=5)
     parser.add_argument("--vocab-size", type=int, default=127, help="Only for --synthetic")
+    parser.add_argument("--seq-len", type=int, default=16)
+    parser.add_argument("--local-batch-size", type=int, default=2)
+    parser.add_argument("--global-batch-size", type=int, default=8)
+    parser.add_argument("--dim", type=int, default=32)
+    parser.add_argument("--moe-inter-dim", type=int, default=64)
+    parser.add_argument("--num-layers", type=int, default=2)
+    parser.add_argument("--num-heads", type=int, default=4)
+    parser.add_argument("--num-kv-heads", type=int, default=2)
+    parser.add_argument("--head-dim", type=int, default=8)
+    parser.add_argument("--experts", type=int, default=4)
+    parser.add_argument("--top-k", type=int, default=2)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--max-norm", type=float, default=1.0)
     options = parser.parse_args()
 
     rank, world_size, device = initialize_distributed()
     try:
-        if world_size != 2:
-            raise ValueError("This TP training example expects exactly two ranks")
+        if (
+            options.num_heads < world_size
+            or options.num_kv_heads < world_size
+            or options.num_heads % world_size
+            or options.num_kv_heads % world_size
+        ):
+            raise ValueError("Both Q and KV head counts must be divisible by TP world size")
+        if options.num_heads % options.num_kv_heads:
+            raise ValueError("Q head count must be divisible by KV head count")
+        if options.head_dim < 2 or options.head_dim % 2:
+            raise ValueError("head_dim must be a positive even integer")
+        if options.experts < 1 or not 1 <= options.top_k <= options.experts:
+            raise ValueError("Require 1 <= top_k <= experts")
+        if options.moe_inter_dim < world_size:
+            raise ValueError("moe_inter_dim must be at least world size")
+        if options.dim < 1 or options.num_layers < 1 or options.seq_len < 1:
+            raise ValueError("Model dimensions, layers and sequence length must be positive")
+        if options.lr <= 0 or options.max_norm <= 0:
+            raise ValueError("lr and max_norm must be positive")
         if options.steps < 1:
             raise ValueError("--steps must be positive")
         if options.synthetic and options.vocab_size < 2:
@@ -71,11 +101,11 @@ def main():
 
         config = TrainingConfig(
             steps=options.steps,
-            localbatchsize=2,
-            globalbatchsize=8,
-            seqlen=16,
-            learningrate=1e-3,
-            maxnorm=1.0,
+            localbatchsize=options.local_batch_size,
+            globalbatchsize=options.global_batch_size,
+            seqlen=options.seq_len,
+            learningrate=options.lr,
+            maxnorm=options.max_norm,
             seed=42,
             warmupsteps=1,
             decayratio=0.5,
@@ -109,14 +139,14 @@ def main():
         args = Qwen3ModelArgs(
             vocab_size=vocab_size,
             max_seq_len=config.seqlen,
-            dim=32,
-            moe_inter_dim=64,
-            numlayers=2,
-            numheads=4,
-            numkvheads=2,
-            head_dim=8,
-            experts=4,
-            k=2,
+            dim=options.dim,
+            moe_inter_dim=options.moe_inter_dim,
+            numlayers=options.num_layers,
+            numheads=options.num_heads,
+            numkvheads=options.num_kv_heads,
+            head_dim=options.head_dim,
+            experts=options.experts,
+            k=options.top_k,
         )
 
         model = Qwen3Model(args).to(device)
