@@ -45,4 +45,69 @@ class PipelineStage(nn.Module):
       tensor = self.outputprojection(self.finalRMSnorm(tensor))
 
     return tensor
-     
+
+# Each call processes exactly one microbatch on this stage.
+def forward_microbatch(stage, x, rank, total_nodes, batch_size, seq_len, dim, device, dtype=torch.float32):
+    if rank > 0:
+        x = torch.empty((batch_size, seq_len, dim), device=device, dtype=dtype)
+        dist.recv(x, src=rank - 1)
+        x.requires_grad_(True)
+
+    output = stage(x)
+    if rank < total_nodes - 1:
+        dist.send(output.detach().contiguous(), dst=rank + 1)
+    return x, output
+
+
+def backward_microbatch(x, output, rank, total_nodes, loss=None):
+    if rank == total_nodes - 1:
+        loss.backward()
+    else:
+        grad_output = torch.empty_like(output)
+        dist.recv(grad_output, src=rank + 1)
+        output.backward(grad_output)
+
+    if rank > 0:
+        dist.send(x.grad.contiguous(), dst=rank - 1)
+
+
+def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, dim, device):
+    # Rank 0 supplies the batch; all ranks need microbatch sizes, last rank needs labels.
+    if rank == 0:
+        tokens = tokens.to(device=device, dtype=torch.long).contiguous()
+        shape = torch.tensor(tokens.shape, dtype=torch.long, device=device)
+    else:
+        shape = torch.empty(2, dtype=torch.long, device=device)
+
+    if total_nodes > 1: dist.broadcast(shape, src=0)
+    batch_size, seq_len = shape.tolist()
+    if not 1 <= num_microbatches <= batch_size: raise ValueError("invalid microbatch count")
+    if seq_len < 2: raise ValueError("sequence length must be at least 2")
+
+    if rank != 0: tokens = torch.empty((batch_size, seq_len), dtype=torch.long, device=device)
+    if total_nodes > 1: dist.broadcast(tokens, src=0)
+
+    stage.train()
+    optimizer.zero_grad(set_to_none=True)
+    microbatches = torch.tensor_split(tokens, num_microbatches, dim=0)
+    saved = []
+    dtype = next(stage.parameters()).dtype
+    total_tokens = batch_size * (seq_len - 1)
+
+    # GPipe: all forwards, then all backwards in reverse order.
+    for mb in microbatches:
+        x, output = forward_microbatch(stage, mb[:, :-1] if rank == 0 else None,
+                                       rank, total_nodes, mb.size(0), seq_len - 1, dim, device, dtype)
+        loss = None
+        if rank == total_nodes - 1:
+            loss = torch.nn.functional.cross_entropy(output.reshape(-1, output.size(-1)),
+                                                      mb[:, 1:].reshape(-1), reduction="sum") / total_tokens
+        saved.append((x, output, loss))
+
+    for x, output, loss in reversed(saved):
+        backward_microbatch(x, output, rank, total_nodes, loss)
+
+    optimizer.step()
+    if rank == total_nodes - 1:
+        return sum(loss.detach().item() for _, _, loss in saved)
+    return None
