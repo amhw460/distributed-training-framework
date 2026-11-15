@@ -42,6 +42,7 @@ class ShardedLinear(nn.Module):
 
 class ShardedEmbedding(nn.Module):
   def __init__(self, embed: nn.Embedding):
+    super().__init__()
 
     shard, shape, numel = parameter_sharding(embed.weight)
 
@@ -67,10 +68,10 @@ class ShardedRMSNorm(nn.Module):
     self.normalized_shape = norm.normalized_shape
     self.eps = norm.eps
 
-    def forward(self, x):
-      weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel)
+  def forward(self, x):
+    weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel)
 
-      return nn.functional.rms_norm(x, self.normalized_shape, weight=weights, eps=self.eps)
+    return nn.functional.rms_norm(x, self.normalized_shape, weight=weights, eps=self.eps)
 
 class ShardedExperts(nn.Module):
   def __init__(self, experts: nn.ModuleList):
