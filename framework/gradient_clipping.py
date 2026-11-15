@@ -88,3 +88,30 @@ def clip_tp_grad_norm_(model, max_norm):
                 parameter.grad.mul_(clip_coefficient)
 
     return global_norm.item()
+
+def clip_pp_grad_norm_(stage, max_norm):
+    """Clip disjoint pipeline-stage gradients using one global norm."""
+    if max_norm <= 0:
+        raise ValueError("max_norm must be positive")
+
+    params = list(stage.parameters())
+    if not params:
+        raise ValueError("pipeline stage has no parameters")
+
+    local_sq = torch.zeros((), dtype=torch.float64, device=params[0].device)
+    for param in params:
+        if param.grad is not None:
+            local_sq += param.grad.detach().to(torch.float64).square().sum()
+
+    if dist.is_initialized() and dist.get_world_size() > 1:
+        dist.all_reduce(local_sq, op=dist.ReduceOp.SUM)
+
+    global_norm = local_sq.sqrt().item()
+    coefficient = min(1.0, max_norm / (global_norm + 1e-6))
+
+    with torch.no_grad():
+        for param in params:
+            if param.grad is not None:
+                param.grad.mul_(coefficient)
+
+    return global_norm
