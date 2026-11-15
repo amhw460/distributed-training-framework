@@ -6,6 +6,7 @@ from framework.distributed import synchronize_gradients
 from framework.gradient_clipping import clip_hybrid_grad_norm_
 import torch.distributed as dist
 from framework.gradient_clipping import clip_tp_grad_norm_
+from framework.tensorparallel import synchronize_tp_head_norm_gradients
 
 class Trainer():
   def __init__(self, model, optimizer, device, config, tp_mode=False):
@@ -80,6 +81,9 @@ class Trainer():
 
     if self.world_size > 1 and dist.is_initialized() and not self.tp_mode:
       synchronize_gradients(self.model) # sync after training, if its tensor parallel each rank has diff part of weight matrix
+
+    if self.tp_mode:
+      synchronize_tp_head_norm_gradients(self.model)
 
     avgloss = totalloss / self.steps_gradient_accumulation 
 
