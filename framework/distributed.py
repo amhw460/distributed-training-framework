@@ -2,7 +2,7 @@ import os
 import torch
 from torch import nn
 import torch.distributed as dist
-from framework.fsdp import ShardedLinear
+from framework.fsdp import ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts
 
 # distributed data paralellism (DDP)
 
@@ -10,9 +10,8 @@ def synchronize_gradients(model):
   total_nodes = dist.get_world_size()
 
   # FSDP shard gradients are already synchronized by reduce-scatter.
-  sharded_parameter_ids = {
-    id(module.weightshard) for module in model.modules()
-    if isinstance(module, ShardedLinear)
+  sharded_parameter_ids = {id(module.weightshard) for module in model.modules()
+    if isinstance(module, (ShardedLinear, ShardedEmbedding, ShardedRMSNorm))
   }
 
   for name, param in model.named_parameters():

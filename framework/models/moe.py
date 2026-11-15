@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from framework.fsdp import ShardedExperts
 
 class Expert(nn.Module):
   def __init__(self, model_args):
@@ -65,6 +66,10 @@ class MoE(nn.Module):
     tokenstates = tokens.reshape(tokens.shape[0] * tokens.shape[1], tokens.shape[2])
 
     topkweights, topkindices, expertlogits = self.router(tokenstates)
+
+    if isinstance(self.experts, ShardedExperts):
+      output = self.experts(tokenstates, topkindices, topkweights)
+      return output.reshape(tokens.shape)
 
     output = torch.zeros(batch * seqlen, self.model_args.dim, device = tokens.device, dtype = tokens.dtype)
 
