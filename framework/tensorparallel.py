@@ -112,21 +112,28 @@ def parallelize_attn(attention):
   attention.local_numkvheads = attention.Wk.local_out_features // attention.model_args.head_dim
 
   return attention
-  
+
 def parallelize_moe(moe):
   for expert in moe.experts:
-    expert.up_proj = ColumnwiseLinearParallelism(up_proj)
-    expert.gate = ColumnwiseLinearParallelism(gate)
-    expert.down_proj = RowwiseLinearParallelism(expert.down_proj)
+        expert.up_proj = ColumnwiseLinearParallelism(expert.up_proj)
+        expert.gate = ColumnwiseLinearParallelism(expert.gate)
+        expert.down_proj = RowwiseLinearParallelism(expert.down_proj)
 
   return moe
 
 def paralellize_model(model):
-  for layer in model.layers:
-    paralellize_attn(layer.attention)
-    parallelize_moe(layer.moe)
+  for layer in model.transformerlayers:
+        parallelize_attn(layer.attention)
+        parallelize_moe(layer.moe)
 
-  return 
-  
+  return model
 
 
+def synchronize_tp_head_norm_gradients(model):
+  """Sum contributions to Q/K RMSNorm weights shared by different TP heads."""
+  for layer in model.transformerlayers:
+    attention = layer.attention
+    for norm in (attention.rmsNormQ, attention.rmsNormK):
+      if norm.weight.grad is None:
+        raise RuntimeError("Expected Q/K norm gradient during TP training")
+      dist.all_reduce(norm.weight.grad, op=dist.ReduceOp.SUM)
