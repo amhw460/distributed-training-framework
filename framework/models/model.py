@@ -89,13 +89,16 @@ class GroupQueryAttention(nn.Module):
 
         self.output = nn.Linear(self.model_args.numheads * self.model_args.head_dim, self.model_args.dim, bias = False)
 
+        self.local_numheads = self.model_args.numheads
+        self.local_numkvheads = self.model_args.numkvheads
+
         self.rmsNormQ = nn.RMSNorm(self.model_args.head_dim, eps = model_args.norm_eps)
         self.rmsNormK = nn.RMSNorm(self.model_args.head_dim, eps = model_args.norm_eps)
 
     def forward(self, tensor, cosine, sine):
-        Q = torch.reshape(self.Wq(tensor), (tensor.shape[0], tensor.shape[1], self.model_args.numheads, self.model_args.head_dim))
-        K = torch.reshape(self.Wk(tensor), (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
-        V = torch.reshape(self.Wv(tensor), (tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, self.model_args.head_dim))
+        Q = self.Wq(tensor).reshape(tensor.shape[0], tensor.shape[1],self.local_numheads, self.model_args.head_dim)
+        K = self.Wk(tensor).reshape(tensor.shape[0], tensor.shape[1], self.local_numkvheads, self.model_args.head_dim)
+        V = self.Wv(tensor).reshape( tensor.shape[0], tensor.shape[1], self.local_numkvheads, self.model_args.head_dim)
 
         normalizedQ = self.rmsNormQ(Q)
         normalizedK = self.rmsNormK(K)
@@ -113,7 +116,7 @@ class GroupQueryAttention(nn.Module):
 
         # do some wizardy on the dims to simply be able to matmul Q * K
 
-        reshapedQ = rotatedQ.view(tensor.shape[0], tensor.shape[1], self.model_args.numkvheads, headsRatio, self.model_args.head_dim) 
+        reshapedQ = rotatedQ.view(tensor.shape[0], tensor.shape[1], self.local_numkvheads, headsRatio, self.model_args.head_dim)
         reshapedQ = reshapedQ.permute(0, 2, 3, 1, 4)
 
         reshapedK = rotatedK.permute(0, 2, 3, 1).unsqueeze(2)
@@ -132,7 +135,7 @@ class GroupQueryAttention(nn.Module):
         attention = torch.softmax(attention, dim=-1, dtype=torch.float32).to(reshapedV.dtype) @ reshapedV
 
         attention = attention.permute(0, 3, 1, 2, 4)
-        attention = attention.reshape(tensor.shape[0], tensor.shape[1], self.model_args.numheads * self.model_args.head_dim)
+        attention = attention.reshape(tensor.shape[0], tensor.shape[1], self.local_numheads * self.model_args.head_dim)
 
         return self.output(attention)
 
