@@ -45,7 +45,7 @@ def main():
         expected_norm = expected_sq.sqrt()
 
         norm = clip_pp_grad_norm_(stage, 0.1)
-        torch.testing.assert_close(torch.tensor(norm), expected_norm,
+        torch.testing.assert_close(torch.tensor(norm, dtype=torch.float64), expected_norm,
                                    rtol=1e-5, atol=1e-7)
         coeff = min(1.0, 0.1 / (expected_norm.item() + 1e-6))
         for param in parameters:
