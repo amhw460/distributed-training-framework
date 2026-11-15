@@ -4,8 +4,12 @@ on:
   push:
     paths:
       - "framework/pipelineparallel.py"
+      - "framework/pp_checkpoint.py"
+      - "framework/gradient_clipping.py"
+      - "scripts/pretrain_pp.py"
       - "framework/models/**"
       - "tests/test_full_pp.py"
+      - "tests/test_pp_training.py"
       - ".github/workflows/test-pp.yml"
   workflow_dispatch:
 
@@ -27,3 +31,17 @@ jobs:
           torchrun --standalone --nproc-per-node=1 -m tests.test_full_pp
           torchrun --standalone --nproc-per-node=2 -m tests.test_full_pp
           torchrun --standalone --nproc-per-node=3 -m tests.test_full_pp
+      - name: Test PP global clipping and checkpoint round-trip
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=1 -m tests.test_pp_training
+          torchrun --standalone --nproc-per-node=2 -m tests.test_pp_training
+          torchrun --standalone --nproc-per-node=3 -m tests.test_pp_training
+      - name: Smoke test GPipe trainer with checkpoint resume
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=2 -m scripts.pretrain_pp --synthetic --steps 2 --schedule-steps 4 --num-layers 3 --batch-size 5 --microbatches 2 --checkpoint-dir /tmp/pp-test --save-every 2
+          torchrun --standalone --nproc-per-node=2 -m scripts.pretrain_pp --synthetic --steps 4 --schedule-steps 4 --num-layers 3 --batch-size 5 --microbatches 2 --resume /tmp/pp-test/step-2
+          torchrun --standalone --nproc-per-node=3 -m scripts.pretrain_pp --synthetic --steps 2 --num-layers 4 --batch-size 7 --microbatches 3
