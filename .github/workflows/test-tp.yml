@@ -5,6 +5,7 @@ on:
     paths:
       - "framework/**"
       - "tests/test_full_tp.py"
+      - "scripts/pretrain_tp.py"
       - ".github/workflows/test-tp.yml"
   workflow_dispatch:
 
@@ -23,3 +24,7 @@ jobs:
         env:
           OMP_NUM_THREADS: "1"
         run: torchrun --standalone --nproc-per-node=2 -m tests.test_full_tp
+      - name: Smoke test TP training entry point
+        env:
+          OMP_NUM_THREADS: "1"
+        run: torchrun --standalone --nproc-per-node=2 -m scripts.pretrain_tp --synthetic --steps 2
