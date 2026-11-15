@@ -78,7 +78,7 @@ class Trainer():
       totalloss += loss
       tokens_this_step += (currentbatch.shape[0] * (currentbatch.shape[1] - 1))
 
-    if self.world_size > 1 and dist.is_initialized() and not self.tpmode:
+    if self.world_size > 1 and dist.is_initialized() and not self.tp_mode:
       synchronize_gradients(self.model) # sync after training, if its tensor parallel each rank has diff part of weight matrix
 
     avgloss = totalloss / self.steps_gradient_accumulation 
