@@ -127,6 +127,13 @@ def paralellize_model(model):
         parallelize_moe(layer.moe)
 
   return model
-  
 
 
+def synchronize_tp_head_norm_gradients(model):
+  """Sum contributions to Q/K RMSNorm weights shared by different TP heads."""
+  for layer in model.transformerlayers:
+    attention = layer.attention
+    for norm in (attention.rmsNormQ, attention.rmsNormK):
+      if norm.weight.grad is None:
+        raise RuntimeError("Expected Q/K norm gradient during TP training")
+      dist.all_reduce(norm.weight.grad, op=dist.ReduceOp.SUM)
