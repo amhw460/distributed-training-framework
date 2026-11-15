@@ -1,6 +1,7 @@
 from pathlib import Path
 import torch.distributed as dist
 from framework.fsdp import ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts
+from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
 import torch
 
 
@@ -17,6 +18,9 @@ class Checkpoint():
 
     if any(isinstance(module, sharded_types) for module in self.trainer.model.modules()):
         raise RuntimeError("FSDP checkpointing is not implemented yet.")
+    tp_types = (ColumnwiseLinearParallelism, RowwiseLinearParallelism)
+    if any(isinstance(module, tp_types) for module in self.trainer.model.modules()):
+        raise RuntimeError("TP checkpointing is not implemented yet; refusing to save or load incomplete local shards.")
 
   def save(self, step):
     self._require_unsharded_model()
