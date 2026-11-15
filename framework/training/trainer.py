@@ -15,7 +15,7 @@ class Trainer():
     self.device = device
     self.config = config
     
-    self.tpmode = tp_mode #tensor parallel
+    self.tp_mode = tp_mode #tensor parallel
 
     self.tokensseen = 0 # tokens processed
     self.trainingstep = 0
