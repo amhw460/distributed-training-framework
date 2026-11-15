@@ -1,7 +1,8 @@
 from pathlib import Path
 import torch.distributed as dist
-
+from framework.fsdp import ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts
 import torch
+
 
 
 class Checkpoint():
@@ -11,7 +12,14 @@ class Checkpoint():
     self.dataset = dataset
 
 
+  def _require_unsharded_model(self):
+    sharded_types = (ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts)
+
+    if any(isinstance(module, sharded_types) for module in self.trainer.model.modules()):
+        raise RuntimeError("FSDP checkpointing is not implemented yet.")
+
   def save(self, step):
+    self._require_unsharded_model()
     if dist.is_initialized() and dist.get_rank() != 0:
         return
         
@@ -27,6 +35,7 @@ class Checkpoint():
     torch.save(state, path)
 
   def load(self, path):
+    self._require_unsharded_model()
     model, optimizer, scheduler, trainer, rng, dataset = torch.load(path, map_location='cpu', weights_only=True)
 
     self.trainer.model.load_state_dict(model)

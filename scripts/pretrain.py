@@ -9,7 +9,7 @@ from framework.models.model_args import Qwen3ModelArgs
 from framework.training.config import TrainingConfig
 from framework.data.dataset import build_fineweb_dataset
 from framework.training.trainer import Trainer
-from framework.training.checkpoint import Checkpoint
+from framework.fsdp import shard_model
 
 
 
@@ -26,14 +26,14 @@ def main():
     rank, world_size, device = initialize_distributed()
 
     config = TrainingConfig(
-        steps=50,
+        steps=5,
         localbatchsize=2,
         globalbatchsize=8,
         seqlen=16,
         learningrate=1e-3,
         maxnorm=1.0,
         seed=42,
-        warmupsteps=5,
+        warmupsteps=1,
         decayratio=0.5,
         decaytype="cosine",
         min_lr=0.1,
@@ -74,29 +74,22 @@ def main():
 
     model = model.to(device)
     synchronize_model(model)
+    model = shard_model(model)
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.lr
     )
 
     trainer = Trainer(model, optimizer, device, config)
-    checkpoint = Checkpoint(trainer, "checkpoints", dataset)
-
-    # Resume if a checkpoint path was supplied
+    # Hybrid FSDP checkpointing is not supported yet.
     if len(sys.argv) > 1:
-        checkpoint.load(sys.argv[1])
+        raise ValueError("Resuming hybrid FSDP training is not supported yet")
 
     # Train until the configured total step count
     remaining = config.steps - trainer.trainingstep
 
     if remaining > 0:
-        trainer.train(
-            loader,
-            remaining,
-            checkpoint=checkpoint,
-            save_every=10,
-        )
-        checkpoint.save(trainer.trainingstep)
+        trainer.train(loader, remaining)
 
     cleanup_distributed()
 

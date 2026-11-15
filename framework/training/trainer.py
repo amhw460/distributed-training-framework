@@ -3,6 +3,7 @@ from torch import nn
 import time
 from framework.training.lr_scheduler import build_lr_scheduler
 from framework.distributed import synchronize_gradients
+from framework.gradient_clipping import clip_hybrid_grad_norm_
 import torch.distributed as dist
 
 class Trainer():
@@ -76,8 +77,7 @@ class Trainer():
     avgloss = totalloss / self.steps_gradient_accumulation 
 
     # cliip gradients if they exceed max
-    gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.maxnorm)
-    gradient_norm = gradient_norm.item()
+    gradient_norm = clip_hybrid_grad_norm_(self.model, self.config.maxnorm)
 
     self.optimizer.step()
     self.scheduler.step()
