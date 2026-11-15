@@ -5,15 +5,17 @@ from framework.training.lr_scheduler import build_lr_scheduler
 from framework.distributed import synchronize_gradients
 from framework.gradient_clipping import clip_hybrid_grad_norm_
 import torch.distributed as dist
+from framework.gradient_clipping import clip_tp_grad_norm_
 
 class Trainer():
-  def __init__(self, model, optimizer, device, config):
+  def __init__(self, model, optimizer, device, config, tp_mode=False):
 
     self.model = model.to(device)
     self.optimizer = optimizer
     self.device = device
     self.config = config
     
+    self.tpmode = tp_mode #tensor parallel
 
     self.tokensseen = 0 # tokens processed
     self.trainingstep = 0
@@ -22,11 +24,16 @@ class Trainer():
 
     self.world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    if self.config.local_batch_size <= 0 or self.config.global_batch_size <= 0 or self.config.global_batch_size % (self.config.local_batch_size * self.world_size) != 0:
-      raise ValueError("global batch size must be a positive multiple of local batch size")
+    batch_multiplier = 1 if self.tp_mode else self.world_size
 
-    self.steps_gradient_accumulation = self.config.global_batch_size // (self.config.local_batch_size * self.world_size)
-  
+    effective_local_batch = self.config.local_batch_size * batch_multiplier
+
+    if (self.config.local_batch_size <= 0 or self.config.global_batch_size <= 0 or self.config.global_batch_size % effective_local_batch != 0):
+        raise ValueError("Invalid global batch size")
+
+    self.steps_gradient_accumulation = self.config.global_batch_size // effective_local_batch
+
+      
 
   def state(self): # we want to be able to resume if it gets blocked at some point
     return self.trainingstep, self.tokensseen
@@ -71,13 +78,16 @@ class Trainer():
       totalloss += loss
       tokens_this_step += (currentbatch.shape[0] * (currentbatch.shape[1] - 1))
 
-    if self.world_size > 1 and dist.is_initialized():
-      synchronize_gradients(self.model) # sync after training
+    if self.world_size > 1 and dist.is_initialized() and not self.tpmode:
+      synchronize_gradients(self.model) # sync after training, if its tensor parallel each rank has diff part of weight matrix
 
     avgloss = totalloss / self.steps_gradient_accumulation 
 
     # cliip gradients if they exceed max
-    gradient_norm = clip_hybrid_grad_norm_(self.model, self.config.maxnorm)
+    if self.tp_mode:
+      gradient_norm = clip_tp_grad_norm_(self.model, self.config.maxnorm)
+    else:
+      gradient_norm = clip_hybrid_grad_norm_(self.model, self.config.maxnorm)
 
     self.optimizer.step()
     self.scheduler.step()
