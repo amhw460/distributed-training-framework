@@ -7,7 +7,7 @@ def clip_hybrid_grad_norm_(model, max_norm):
 
     # hybrid gradient clipping for fsdp
     
-    sharded_parameter_ids = {id(module.weightshard) for module in model.modules() if isinstance(module, (ShardedLinear, ShardedEmbedding, ShardedRMSNorm))}
+    sharded_parameter_ids = {id(module.weightshard) for module in model.modules() if isinstance(module, (ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts))}
 
     # if its ddp just use regular thing
     if not sharded_parameter_ids:
