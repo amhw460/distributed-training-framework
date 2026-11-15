@@ -7,6 +7,7 @@ on:
       - "tests/test_full_tp.py"
       - "tests/test_parameter_variations.py"
       - "scripts/pretrain_tp.py"
+      - "scripts/pretrain.py"
       - ".github/workflows/test-tp.yml"
   workflow_dispatch:
 
@@ -43,3 +44,9 @@ jobs:
           OMP_NUM_THREADS: "1"
         run: |
           torchrun --standalone --nproc-per-node=3 -m scripts.pretrain_tp --synthetic --steps 2 --num-layers 3 --dim 20 --moe-inter-dim 14 --num-heads 6 --num-kv-heads 3 --head-dim 4 --experts 5 --top-k 3 --seq-len 7 --local-batch-size 3 --global-batch-size 9 --vocab-size 53
+      - name: Test configurable DDP and FSDP entry points
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=3 -m scripts.pretrain --parallelism fsdp --synthetic --steps 2 --num-layers 1 --dim 20 --moe-inter-dim 14 --num-heads 6 --num-kv-heads 3 --head-dim 4 --experts 5 --top-k 3 --seq-len 7 --local-batch-size 2 --global-batch-size 12 --vocab-size 53
+          torchrun --standalone --nproc-per-node=3 -m scripts.pretrain --parallelism ddp --synthetic --steps 2 --num-layers 1 --dim 20 --moe-inter-dim 14 --num-heads 6 --num-kv-heads 3 --head-dim 4 --experts 5 --top-k 3 --seq-len 7 --local-batch-size 2 --global-batch-size 12 --vocab-size 53

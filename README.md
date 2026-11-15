@@ -1,46 +1,42 @@
 # Distributed Training Framework
 
-Building a distributed training framework from scratch using Qwen3-MoE, in the style of TorchTitan.
+A from-scratch Qwen3-MoE training project with manual DDP, FSDP, and Tensor Parallelism (TP). Models and training configuration are parameterized; execution currently uses **CPU/Gloo**. PP/EP and combined multi-dimensional parallelism are not implemented yet.
 
-## Layout
+## Training
 
-```text
-framework/
-  models/          # Qwen3 model, model arguments, and mixture of experts
-  training/        # Trainer, checkpointing, training config, and LR scheduler
-  data/            # Text dataset and FineWeb dataset construction
-  distributed.py   # Distributed training placeholder
-scripts/
-  pretrain.py      # FineWeb training and checkpoint resume entry point
-  run.py           # Original small-model demo
-tests/
-  test_model.py
-  test_accumulation.py
-  test_scheduler.py
-```
-
-## Run
-
-Run these commands from the repository root using the existing virtual environment.
-FineWeb training downloads the tokenizer and streams the dataset.
+From the repository root, using your Python environment:
 
 ```sh
-.venv/bin/python -m scripts.pretrain
-.venv/bin/python -m scripts.pretrain checkpoints/step-10.pt
+# CPU-only offline smoke tests (no tokenizer or FineWeb download)
+torchrun --standalone --nproc-per-node=2 -m scripts.pretrain --parallelism ddp --synthetic --steps 2
+torchrun --standalone --nproc-per-node=2 -m scripts.pretrain --parallelism fsdp --synthetic --steps 2
+torchrun --standalone --nproc-per-node=2 -m scripts.pretrain_tp --synthetic --steps 2
+
+# Use different rank counts and model/batch configurations
+torchrun --standalone --nproc-per-node=3 -m scripts.pretrain_tp --synthetic \
+  --num-heads 6 --num-kv-heads 3 --head-dim 4 --moe-inter-dim 14 \
+  --num-layers 3 --experts 5 --top-k 3 \
+  --local-batch-size 3 --global-batch-size 9 --seq-len 7
 ```
+
+Omit `--synthetic` to stream FineWeb and use the Qwen3 tokenizer. `--help` lists available model and training settings. TP requires both Q and KV head counts to be divisible by the number of TP ranks; it also requires the same token batch on every rank (the TP runner broadcasts from rank 0). DDP/FSDP use different data per rank.
 
 ## Tests
 
-Run all existing checks:
-
 ```sh
-.venv/bin/python -m tests
+python -m tests
+torchrun --standalone --nproc-per-node=2 -m tests.test_full_fsdp
+torchrun --standalone --nproc-per-node=2 -m tests.test_full_tp
+torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode tp
+torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode fsdp
+torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode ddp
 ```
 
-Or run an individual check:
+CI also exercises TP with 1 and 4 ranks and configurable multi-rank training entry points.
 
-```sh
-.venv/bin/python -m tests.test_model
-.venv/bin/python -m tests.test_accumulation
-.venv/bin/python -m tests.test_scheduler
-```
+## Current limitations
+
+- CUDA/NCCL GPU execution is not wired up; the distributed initializer uses CPU/Gloo.
+- FSDP and TP checkpoint/resume are not implemented; do not attempt to save partial rank-local states as complete checkpoints.
+- Manual DDP uses replicated model parameters and explicit gradient synchronization.
+- Large-model scaling, performance, and all combinations of valid hyperparameters have not been benchmarked or validated.
