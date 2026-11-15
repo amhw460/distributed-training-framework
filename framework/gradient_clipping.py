@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 from framework.fsdp import ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts
-from framework.tensor_parallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
+from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
 
 def clip_hybrid_grad_norm_(model, max_norm):
 
