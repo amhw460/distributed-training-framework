@@ -75,9 +75,18 @@ def run_case(config, batch_size, num_microbatches, rank, total_nodes, case_numbe
         tokens = torch.randint(0, config.vocab_size, (batch_size, config.max_seq_len), generator=generator)
 
         dense_optimizer.zero_grad(set_to_none=True)
-        dense_logits = dense(tokens[:, :-1])
-        dense_loss = F.cross_entropy(dense_logits.reshape(-1, config.vocab_size), tokens[:, 1:].reshape(-1))
-        dense_loss.backward()
+        # Compare against the same microbatch schedule on an unpartitioned model.
+        # Using one whole-batch forward instead changes floating-point reduction
+        # order; tiny MoE gradients can then cause large AdamW step differences.
+        losses = []
+        total_tokens = batch_size * (config.max_seq_len - 1)
+        for mb in torch.tensor_split(tokens, num_microbatches, dim=0):
+            logits = dense(mb[:, :-1])
+            losses.append(F.cross_entropy(logits.reshape(-1, config.vocab_size),
+                                          mb[:, 1:].reshape(-1), reduction="sum") / total_tokens)
+        dense_loss = sum(losses)
+        for loss in reversed(losses):
+            loss.backward()
 
         # GPipe independently accumulates gradients across (possibly uneven) microbatches.
         actual_loss = gpipe_step(stage, tokens if rank == 0 else None, stage_optimizer,
