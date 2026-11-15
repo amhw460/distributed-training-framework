@@ -11,7 +11,7 @@ def synchronize_gradients(model):
 
   # FSDP shard gradients are already synchronized by reduce-scatter.
   sharded_parameter_ids = {id(module.weightshard) for module in model.modules()
-    if isinstance(module, (ShardedLinear, ShardedEmbedding, ShardedRMSNorm))
+    if isinstance(module, (ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts))
   }
 
   for name, param in model.named_parameters():
