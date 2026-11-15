@@ -1,0 +1,29 @@
+name: Pipeline-parallel correctness
+
+on:
+  push:
+    paths:
+      - "framework/pipelineparallel.py"
+      - "framework/models/**"
+      - "tests/test_full_pp.py"
+      - ".github/workflows/test-pp.yml"
+  workflow_dispatch:
+
+jobs:
+  test-pp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Compare GPipe to full Qwen3 across stage counts
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=1 -m tests.test_full_pp
+          torchrun --standalone --nproc-per-node=2 -m tests.test_full_pp
+          torchrun --standalone --nproc-per-node=3 -m tests.test_full_pp
