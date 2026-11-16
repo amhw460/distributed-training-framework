@@ -2,18 +2,21 @@ import torch
 import torch.distributed as dist
 
 
-def rotate(*tensors):
+def rotate(*tensors, group=None):
   # Move K/V (and during backward, their gradients) to the next rank.
-  rank, total_nodes = dist.get_rank(), dist.get_world_size()
+  rank, total_nodes = dist.get_rank(group=group), dist.get_world_size(group=group)
   if total_nodes == 1: return tensors
 
   next_rank = (rank + 1) % total_nodes
   previous_rank = (rank - 1) % total_nodes
+  if group is not None:
+    next_rank = dist.get_global_rank(group, next_rank)
+    previous_rank = dist.get_global_rank(group, previous_rank)
   received = [torch.empty_like(tensor) for tensor in tensors]
   ops = []
   for i, (tensor, buffer) in enumerate(zip(tensors, received)):
-    ops.append(dist.P2POp(dist.isend, tensor.contiguous(), next_rank, tag=i))
-    ops.append(dist.P2POp(dist.irecv, buffer, previous_rank, tag=i))
+    ops.append(dist.P2POp(dist.isend, tensor.contiguous(), next_rank, group=group, tag=i))
+    ops.append(dist.P2POp(dist.irecv, buffer, previous_rank, group=group, tag=i))
   for request in dist.batch_isend_irecv(ops):
     request.wait()
   return tuple(received)
@@ -21,8 +24,9 @@ def rotate(*tensors):
 
 class RingAttention(torch.autograd.Function):
   @staticmethod
-  def forward(ctx, q, k, v):
-    rank, total_nodes = dist.get_rank(), dist.get_world_size()
+  def forward(ctx, q, k, v, group):
+    ctx.group = group
+    rank, total_nodes = dist.get_rank(group=group), dist.get_world_size(group=group)
     scale = q.shape[-1] ** -0.5
     query = q.float()
 
@@ -49,7 +53,7 @@ class RingAttention(torch.autograd.Function):
         maximum = newmax
 
       if step + 1 < total_nodes:
-        currentk, currentv = rotate(currentk, currentv)
+        currentk, currentv = rotate(currentk, currentv, group=group)
 
     output = numerator / denominator.unsqueeze(-1)
     ctx.save_for_backward(q, k, v, output, maximum + denominator.log())
@@ -58,7 +62,8 @@ class RingAttention(torch.autograd.Function):
   @staticmethod
   def backward(ctx, grad_output):
     q, k, v, output, logsumexp = ctx.saved_tensors
-    rank, total_nodes = dist.get_rank(), dist.get_world_size()
+    group = ctx.group
+    rank, total_nodes = dist.get_rank(group=group), dist.get_world_size(group=group)
     scale = q.shape[-1] ** -0.5
 
     query = q.float()
@@ -88,17 +93,19 @@ class RingAttention(torch.autograd.Function):
       # The gradients travel with their K/V block, accumulating contributions
       # from every querying rank. The last rotation returns them to their owner.
       if total_nodes > 1:
-        currentk, currentv, dk, dv = rotate(currentk, currentv, dk, dv)
+        currentk, currentv, dk, dv = rotate(currentk, currentv, dk, dv, group=group)
 
-    return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype)
-
-
-def ring_attention(q, k, v):
-  return RingAttention.apply(q, k, v)
+    return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None
 
 
-def parallelize_cp(model):
-  model.cp_rank = dist.get_rank()
+def ring_attention(q, k, v, group=None):
+  return RingAttention.apply(q, k, v, group)
+
+
+def parallelize_cp(model, group=None):
+  model.cp_rank = dist.get_rank(group=group)
+  model.cp_group = group
   for layer in model.transformerlayers:
     layer.attention.cp_mode = True
+    layer.attention.cp_group = group
   return model
