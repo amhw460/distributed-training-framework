@@ -6,6 +6,7 @@ splits matrices; CP splits sequences; FSDP shards local weights; DP averages
 replica gradients. Gradients are normalized once after backward.
 """
 from pathlib import Path
+import time
 
 import torch
 import torch.distributed as dist
@@ -178,10 +179,14 @@ def broadcast_replica_batch(batch, mesh, batch_group, leader, shape, device):
 
 
 class HybridTrainer:
-    def __init__(self, model, mesh, optimizer, max_norm, microbatches=1):
+    def __init__(self, model, mesh, optimizer, max_norm, microbatches=1, scheduler=None, run_config=None):
         self.model = model
         self.mesh = mesh
         self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.run_config = dict(run_config or {})
+        self.tokens_seen = 0
+        self.last_metrics = {}
         self.max_norm = max_norm
         self.microbatches = microbatches
         self.step = 0
@@ -235,16 +240,42 @@ class HybridTrainer:
         batches = tokens if isinstance(tokens, list) else [tokens]
         if not batches:
             raise ValueError("At least one local batch is required")
+        device = next(self.model.parameters()).device
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        started = time.perf_counter()
+        lr = self.optimizer.param_groups[0]["lr"]
         self.optimizer.zero_grad(set_to_none=True)
         loss = sum(self._forward_backward(batch, 1.0 / len(batches)) for batch in batches)
         synchronize_hybrid_gradients(self.model, self.mesh)
         norm = clip_hybrid_gradients(self.model, self.mesh, self.max_norm)
         self.optimizer.step()
         self.step += 1
+        if self.scheduler is not None:
+            self.scheduler.step()
+        batch_tokens = sum(batch.shape[0] * (batch.shape[1] - 1) for batch in batches)
+        global_tokens = batch_tokens * data_replica_count(self.mesh)
+        self.tokens_seen += global_tokens
         # Each pipeline stage must see the same logged average.
         value = loss.clone()
         dist.all_reduce(value, op=dist.ReduceOp.SUM)
         value /= self.mesh.world_size // self.mesh.size("pp")
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        elapsed = time.perf_counter() - started
+        duration = torch.tensor(elapsed, dtype=torch.float64, device=device)
+        dist.all_reduce(duration, op=dist.ReduceOp.MAX)
+        elapsed = duration.item()
+        self.last_metrics = {
+            "step": self.step,
+            "loss": value.item(),
+            "grad_norm": norm,
+            "lr": lr,
+            "step_time_s": elapsed,
+            "tokens_per_sec": global_tokens / elapsed,
+            "tokens_seen": self.tokens_seen,
+            "step_tokens": global_tokens,
+        }
         return value.item(), norm
 
     def save(self, folder, model_args):
@@ -258,6 +289,9 @@ class HybridTrainer:
             "model_args": vars(model_args).copy(),
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
+            "run_config": self.run_config,
+            "tokens_seen": self.tokens_seen,
             "rng": torch.get_rng_state(),
         }
         if torch.cuda.is_available():
@@ -276,8 +310,15 @@ class HybridTrainer:
             raise ValueError("Checkpoint rank or mesh does not match")
         if payload["model_args"] != vars(model_args):
             raise ValueError("Checkpoint model configuration does not match")
+        if payload.get("run_config", {}) != self.run_config:
+            raise ValueError("Checkpoint training configuration does not match")
+        if (payload.get("scheduler") is None) != (self.scheduler is None):
+            raise ValueError("Checkpoint scheduler configuration does not match")
         self.model.load_state_dict(payload["model"])
         self.optimizer.load_state_dict(payload["optimizer"])
+        if self.scheduler is not None:
+            self.scheduler.load_state_dict(payload["scheduler"])
+        self.tokens_seen = int(payload.get("tokens_seen", 0))
         torch.set_rng_state(payload["rng"])
         if "cuda_rng" in payload and torch.cuda.is_available():
             torch.cuda.set_rng_state(payload["cuda_rng"])
