@@ -180,7 +180,7 @@ class HybridTrainer:
         if microbatches < 1:
             raise ValueError("microbatches must be >= 1")
 
-    def _forward_backward(self, tokens):
+    def _forward_backward(self, tokens, loss_scale=1.0):
         mesh = self.mesh
         x, y = tokens[:, :-1], tokens[:, 1:]
         if mesh.size("cp") > 1:
@@ -193,7 +193,7 @@ class HybridTrainer:
 
         if mesh.size("pp") == 1:
             logits = self.model(x)
-            loss = F.cross_entropy(logits.flatten(0, -2), y.flatten())
+            loss = F.cross_entropy(logits.flatten(0, -2), y.flatten()) * loss_scale
             loss.backward()
             return loss.detach()
 
@@ -212,7 +212,7 @@ class HybridTrainer:
             )
             loss = (
                 F.cross_entropy(output.flatten(0, -2), yb.flatten(), reduction="sum")
-                / y.numel()
+                / y.numel() * loss_scale
                 if is_last else None
             )
             saved.append((incoming, output, loss))
@@ -224,8 +224,11 @@ class HybridTrainer:
         return torch.zeros((), device=x.device)
 
     def training_step(self, tokens):
+        batches = tokens if isinstance(tokens, list) else [tokens]
+        if not batches:
+            raise ValueError("At least one local batch is required")
         self.optimizer.zero_grad(set_to_none=True)
-        loss = self._forward_backward(tokens)
+        loss = sum(self._forward_backward(batch, 1.0 / len(batches)) for batch in batches)
         synchronize_hybrid_gradients(self.model, self.mesh)
         norm = clip_hybrid_gradients(self.model, self.mesh, self.max_norm)
         self.optimizer.step()
