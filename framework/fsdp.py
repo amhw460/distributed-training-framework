@@ -229,3 +229,59 @@ def shard_model(model, group=None):
     layer.moe.experts = ShardedExperts(layer.moe.experts, group=group)
 
   return model
+
+
+class ShardedTensorParallelLinear(nn.Module):
+  """FSDP-shard the *local TP weight*, preserving the original TP collectives."""
+  def __init__(self, layer, group=None):
+    from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
+    super().__init__()
+    if not isinstance(layer, (ColumnwiseLinearParallelism, RowwiseLinearParallelism)):
+      raise TypeError("expected a tensor-parallel linear")
+    self.columnwise = isinstance(layer, ColumnwiseLinearParallelism)
+    self.tp_group = layer.group
+    self.fsdp_group = group
+    self.shape = tuple(layer.weight.shape)
+    self.numel = layer.weight.numel()
+    shard, _, _ = parameter_sharding(layer.weight.detach(), group=group)
+    self.weightshard = nn.Parameter(shard)
+    self.tp_sharded = True
+
+  def forward(self, x):
+    from framework.tensorparallel import CopyToTensorParallelRegion, ReduceFromTensorParallelRegion
+    weight = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel, self.fsdp_group)
+    if self.columnwise:
+      x = CopyToTensorParallelRegion.apply(x, self.tp_group)
+      return nn.functional.linear(x, weight)
+    output = nn.functional.linear(x, weight)
+    return ReduceFromTensorParallelRegion.apply(output, self.tp_group)
+
+
+def shard_local_modules(module, group=None):
+  """Shard every local leaf parameter after PP/EP/TP partitioning.
+
+  This is intentionally simple: each existing linear/embedding/norm is
+  reconstructed for its forward call and reduce-scattered in backward.
+  No custom flattening, optimizer state partitioning, or overlap.
+  """
+  from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
+
+  for name, child in list(module.named_children()):
+    if isinstance(child, (ColumnwiseLinearParallelism, RowwiseLinearParallelism)):
+      replacement = ShardedTensorParallelLinear(child, group=group)
+    elif isinstance(child, nn.Linear):
+      replacement = ShardedLinear(child, group=group)
+    elif isinstance(child, nn.Embedding):
+      replacement = ShardedEmbedding(child, group=group)
+    elif isinstance(child, nn.RMSNorm):
+      replacement = ShardedRMSNorm(child, group=group)
+    else:
+      shard_local_modules(child, group=group)
+      continue
+    setattr(module, name, replacement)
+
+  # Expert loops must enter all FSDP collectives in the same order,
+  # including experts receiving no tokens on one data-parallel rank.
+  if module.__class__.__name__ in ("MoE", "ExpertParallel"):
+    module.fsdp_mode = True
+  return module
