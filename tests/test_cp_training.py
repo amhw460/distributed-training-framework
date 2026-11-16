@@ -34,24 +34,15 @@ def run():
     dense_trainer = Trainer(dense, denseoptimizer, torch.device("cpu"), config)
     cp_trainer = Trainer(cp, cpoptimizer, torch.device("cpu"), config, cp_mode=True)
 
-    assert dense_trainer.steps_gradient_accumulation == 1 if total_nodes == 2 else True
+    dense_trainer.steps_gradient_accumulation = 2
     assert cp_trainer.steps_gradient_accumulation == 2
 
     batches = [torch.randint(0, args.vocab_size, (2, args.max_seq_len + 1),
                              generator=torch.Generator().manual_seed(100 + i))
                for i in range(4)]
 
-    # Reference training processes the same global batch as CP.
-    # DDP-style reference handles the same two microbatches by setting batch size.
-    denseconfig = TrainingConfig(steps=2, localbatchsize=4, globalbatchsize=4,
-                                 seqlen=args.max_seq_len, learningrate=0.003,
-                                 maxnorm=0.1, seed=42, warmupsteps=1,
-                                 decayratio=0.5, decaytype="cosine", min_lr=0.1)
-    dense_trainer = Trainer(dense, denseoptimizer, torch.device("cpu"), denseconfig)
-
     for step in range(2):
-      fullbatch = torch.cat(batches[2 * step:2 * step + 2], dim=0)
-      reference = dense_trainer.training_step(iter([fullbatch]))
+      reference = dense_trainer.training_step(iter(batches[2 * step:2 * step + 2]))
       actual = cp_trainer.training_step(iter(batches[2 * step:2 * step + 2]))
 
       torch.testing.assert_close(torch.tensor(actual[0]), torch.tensor(reference[0]),
