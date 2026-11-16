@@ -10,6 +10,7 @@ Every axis defaults to 1. The product of axis sizes must equal WORLD_SIZE.
 import argparse
 from pathlib import Path
 import os
+import json
 
 import torch
 import torch.distributed as dist
@@ -18,6 +19,7 @@ from torch.utils.data import DataLoader
 from framework.models.model import Qwen3Model
 from framework.models.model_args import Qwen3ModelArgs
 from framework.parallel_mesh import ParallelMesh
+from framework.training.runtime import build_optimizer, build_hybrid_scheduler
 from framework.model_composer import compose_model
 from framework.hybrid_train import (
     HybridTrainer, create_batch_group, broadcast_replica_batch,
@@ -45,6 +47,17 @@ def options():
     p.add_argument("--experts", type=int, default=4)
     p.add_argument("--top-k", type=int, default=2)
     p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--optimizer", choices=("adamw", "adam", "sgd"), default="adamw")
+    p.add_argument("--weight-decay", type=float, default=0.01)
+    p.add_argument("--beta1", type=float, default=0.9)
+    p.add_argument("--beta2", type=float, default=0.999)
+    p.add_argument("--eps", type=float, default=1e-8)
+    p.add_argument("--momentum", type=float, default=0.0)
+    p.add_argument("--scheduler", choices=("constant", "linear", "sqrt", "cosine"), default="constant")
+    p.add_argument("--warmup-steps", type=int, default=0)
+    p.add_argument("--decay-ratio", type=float)
+    p.add_argument("--min-lr-factor", type=float, default=0.0)
+    p.add_argument("--metrics-file", type=Path)
     p.add_argument("--max-norm", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--checkpoint-dir", type=Path)
@@ -69,6 +82,8 @@ def main():
         raise ValueError("Require 1 <= top-k <= experts")
     if cfg.lr <= 0 or cfg.max_norm <= 0 or cfg.save_every < 0:
         raise ValueError("invalid learning rate, max norm, or checkpoint interval")
+    if cfg.warmup_steps < 0 or cfg.warmup_steps > cfg.steps:
+        raise ValueError("warmup steps must fit within training steps")
     if cfg.save_every and not cfg.checkpoint_dir:
         raise ValueError("--save-every requires --checkpoint-dir")
 
@@ -115,8 +130,28 @@ def main():
         composed = compose_model(dense, mesh, cfg.seq_len)
         model = composed.model
         del dense
-        optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
-        trainer = HybridTrainer(model, mesh, optimizer, cfg.max_norm, cfg.microbatches)
+        optimizer = build_optimizer(
+            model.parameters(), name=cfg.optimizer, lr=cfg.lr,
+            weight_decay=cfg.weight_decay, beta1=cfg.beta1, beta2=cfg.beta2,
+            eps=cfg.eps, momentum=cfg.momentum,
+        )
+        scheduler = build_hybrid_scheduler(
+            optimizer, name=cfg.scheduler, steps=cfg.steps,
+            warmup_steps=cfg.warmup_steps, decay_ratio=cfg.decay_ratio,
+            min_lr_factor=cfg.min_lr_factor,
+        )
+        resume_config = {
+            "optimizer": cfg.optimizer, "lr": cfg.lr, "weight_decay": cfg.weight_decay,
+            "beta1": cfg.beta1, "beta2": cfg.beta2, "eps": cfg.eps, "momentum": cfg.momentum,
+            "scheduler": cfg.scheduler, "warmup_steps": cfg.warmup_steps,
+            "decay_ratio": cfg.decay_ratio, "min_lr_factor": cfg.min_lr_factor,
+            "global_batch_size": global_batch, "local_batch_size": cfg.local_batch_size,
+            "microbatches": cfg.microbatches, "seed": cfg.seed,
+        }
+        if cfg.scheduler != "constant":
+            resume_config["schedule_steps"] = cfg.steps
+        trainer = HybridTrainer(model, mesh, optimizer, cfg.max_norm, cfg.microbatches,
+                                scheduler=scheduler, run_config=resume_config)
         if cfg.resume:
             trainer.load(cfg.resume, args)
         if trainer.step > cfg.steps:
@@ -156,7 +191,19 @@ def main():
 
             loss, norm = trainer.training_step(batches)
             if mesh.global_rank == 0:
-                print(f"step={trainer.step} loss={loss:.6f} grad_norm={norm:.6f}", flush=True)
+                metrics = trainer.last_metrics
+                print(
+                    f"step={metrics['step']} loss={metrics['loss']:.6f} "
+                    f"grad_norm={metrics['grad_norm']:.6f} lr={metrics['lr']:.8g} "
+                    f"tokens_seen={metrics['tokens_seen']} "
+                    f"step_time_s={metrics['step_time_s']:.4f} "
+                    f"tokens_per_sec={metrics['tokens_per_sec']:.2f}",
+                    flush=True,
+                )
+                if cfg.metrics_file is not None:
+                    cfg.metrics_file.parent.mkdir(parents=True, exist_ok=True)
+                    with cfg.metrics_file.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(metrics) + "\\n")
             if cfg.checkpoint_dir and cfg.save_every and trainer.step % cfg.save_every == 0:
                 trainer.save(cfg.checkpoint_dir, args)
 
