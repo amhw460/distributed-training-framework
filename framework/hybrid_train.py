@@ -43,7 +43,7 @@ def _fsdp_parameter_ids(model):
 
 
 def synchronize_hybrid_gradients(model, mesh):
-    """Synchronize only replicated dimensions; never mix unrelated shards."""
+    """Only sync weights that are supposed to be replicated."""
     params = list(model.parameters())
     expert_ids = _expert_parameter_ids(model)
 
@@ -204,7 +204,7 @@ class HybridTrainer:
             loss.backward()
             return loss.detach()
 
-        # GPipe: all forward microbatches followed by reverse backward order.
+        # gpipe sends all microbatches forward before doing backward in reverse
         micro_x = x.tensor_split(self.microbatches, dim=0)
         micro_y = y.tensor_split(self.microbatches, dim=0)
         saved = []
