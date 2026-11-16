@@ -24,7 +24,7 @@ jobs:
           OMP_NUM_THREADS: "1"
         run: |
           set -eux
-          python -m scripts.pretrain_hybrid --synthetic --steps 2 --microbatches 1
+          torchrun --standalone --nproc-per-node=1 -m scripts.pretrain_hybrid --synthetic --steps 2 --microbatches 1
           for flags in '--dp 2 --tp 2' '--tp 2 --cp 2' '--tp 2 --ep 2' '--tp 2 --pp 2' '--tp 2 --fsdp 2' '--ep 2 --fsdp 2' '--pp 2 --cp 2'; do
             torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid --synthetic --steps 2 $flags
           done
