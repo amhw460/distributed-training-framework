@@ -60,8 +60,10 @@ def validate_parameter_weights(dense, distributed, mesh):
             padded = F.pad(flat, (0, size * mesh.size("fsdp") - flat.numel()))
             expected = padded[mesh.rank("fsdp") * size:(mesh.rank("fsdp") + 1) * size]
             torch.testing.assert_close(module.weightshard.detach(), expected, rtol=1e-3, atol=5e-6, msg=key)
+    tp_weight_names = {name + ".weight" for name, module in distributed.named_modules()
+                       if isinstance(module, (ColumnwiseLinearParallelism, RowwiseLinearParallelism))}
     for name, param in distributed.named_parameters():
-        if name.endswith(".weightshard"):
+        if name.endswith(".weightshard") or name in tp_weight_names:
             continue
         if name in dense_params or name.startswith("layers."):
             expected = dense_params[dense_parameter_name(name, mesh)].detach()
