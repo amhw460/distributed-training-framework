@@ -2,6 +2,7 @@ from framework.models.moe import MoE
 import torch
 from torch import nn
 from framework.models.model_args import Qwen3ModelArgs
+from framework.contextparallel import ring_attention
 
 def _RoPE(vector, cosine, sine, head_dim):
     split = torch.split(vector, head_dim // 2, dim = -1)
@@ -65,8 +66,12 @@ class Qwen3Model(nn.Module):
 
          embeddings = self.embeddings(tokenIDs)
 
+         offset = getattr(self, "cp_rank", 0) * tokenIDs.shape[1]
+         cosine = self.rope_cosine_values[offset:offset + tokenIDs.shape[1]]
+         sine = self.rope_sine_values[offset:offset + tokenIDs.shape[1]]
+
          for layer in self.transformerlayers:
-              embeddings = layer(embeddings, self.rope_cosine_values, self.rope_sine_values)
+              embeddings = layer(embeddings, cosine, sine)
 
          embeddings = self.finalRMSnorm(embeddings)
 
@@ -122,17 +127,23 @@ class GroupQueryAttention(nn.Module):
         reshapedK = rotatedK.permute(0, 2, 3, 1).unsqueeze(2)
         reshapedV = V.permute(0,2,1,3).unsqueeze(2)
 
-        attention = reshapedQ @ reshapedK
-        attention = attention / (self.model_args.head_dim) ** 0.5
+        if getattr(self, "cp_mode", False):
+            # Ring attention expects keys with sequence before head dimension.
+            keys = reshapedK.transpose(-2, -1).expand(-1, -1, headsRatio, -1, -1).contiguous()
+            values = reshapedV.expand(-1, -1, headsRatio, -1, -1).contiguous()
+            attention = ring_attention(reshapedQ, keys, values)
+        else:
+            attention = reshapedQ @ reshapedK
+            attention = attention / (self.model_args.head_dim) ** 0.5
 
-        # we have to do the manual causal masking and stuff now
+            # we have to do the manual causal masking and stuff now
 
-        causal_mask = torch.full((tensor.shape[1], tensor.shape[1]), float("-inf"), device = attention.device)
-        causal_mask = torch.triu(causal_mask, diagonal=1)
+            causal_mask = torch.full((tensor.shape[1], tensor.shape[1]), float("-inf"), device = attention.device)
+            causal_mask = torch.triu(causal_mask, diagonal=1)
 
-        attention = attention + causal_mask
+            attention = attention + causal_mask
 
-        attention = torch.softmax(attention, dim=-1, dtype=torch.float32).to(reshapedV.dtype) @ reshapedV
+            attention = torch.softmax(attention, dim=-1, dtype=torch.float32).to(reshapedV.dtype) @ reshapedV
 
         attention = attention.permute(0, 3, 1, 2, 4)
         attention = attention.reshape(tensor.shape[0], tensor.shape[1], self.local_numheads * self.model_args.head_dim)

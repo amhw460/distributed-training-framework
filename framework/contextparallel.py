@@ -98,6 +98,7 @@ def ring_attention(q, k, v):
 
 
 def parallelize_cp(model):
+  model.cp_rank = dist.get_rank()
   for layer in model.transformerlayers:
     layer.attention.cp_mode = True
   return model
