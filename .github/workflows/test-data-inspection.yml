@@ -1,0 +1,23 @@
+name: Dataset inspection correctness
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/inspect_data.py"
+      - "tests/test_inspect_data.py"
+      - ".github/workflows/test-data-inspection.yml"
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Parquet dependency
+        run: python -m pip install pyarrow
+      - name: Test reports, sampling, counts and HTML escaping
+        run: python -m unittest tests.test_inspect_data -v

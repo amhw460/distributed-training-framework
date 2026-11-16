@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 
 
 # avoid downloading the Qwen tokenizer just to test the local parquet reader
-with patch.dict(sys.modules, {"transformers": types.SimpleNamespace(AutoTokenizer=types.SimpleNamespace(from_pretrained=lambda *args, **kwargs: None))}):
+with patch.dict(sys.modules, {"transformers": types.SimpleNamespace(AutoTokenizer=types.SimpleNamespace(from_pretrained=lambda *args, **kwargs: None)), "datasets": types.SimpleNamespace(load_dataset=lambda *args, **kwargs: None)}):
     from framework.data.dataset import ParquetDocumentDataset, build_parquet_dataset
 
 

@@ -110,3 +110,14 @@ torchrun --standalone --nproc-per-node=1 -m scripts.pretrain_hybrid --dataset-pa
 ```
 
 Without `--dataset-path`, training continues to stream FineWeb. The local reader assigns each document to one DP/FSDP/EP data replica. TP/CP/PP ranks still share that replica's batch using the existing broadcast. The loader currently uses `num_workers=0`; it reads files incrementally, but does not loop over the dataset indefinitely. Checkpoint resume reconstructs and skips consumed packed samples, so the Parquet data and replica configuration must stay the same.
+
+## Inspecting prepared data
+
+Generate a standalone HTML report from the saved Parquet shards. This scans word lengths for every document and uses a reproducible random sample for Qwen3 token lengths and text previews. The report includes the cleaning counts from the manifest. No web server or charting library is required.
+
+```sh
+python -m scripts.inspect_data --dataset-path data/fineweb-100k --sample-size 1000
+open data/fineweb-100k/report.html
+```
+
+The default output is `report.html` inside the dataset directory; use `--output` to place it elsewhere, and `--previews` to change the number of sample excerpts. Token lengths are measured on the sample rather than all 99k documents to keep inspection inexpensive.
