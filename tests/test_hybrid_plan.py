@@ -11,7 +11,7 @@ from framework.models.model_args import Qwen3ModelArgs
 
 
 def check_plan(mesh, args, plan, dense):
-    # Every rank agrees on the same global rank-to-coordinate mapping.
+    # all ranks should have the same coordinate mapping
     assert len(plan.active_strategies) == sum(mesh.size(a) > 1 for a in mesh.DIMENSIONS)
     for rank in range(mesh.world_size):
         place = plan.placement(rank)
