@@ -94,7 +94,11 @@ class Trainer():
     if self.tp_mode:
       synchronize_tp_head_norm_gradients(self.model)
 
-    avgloss = totalloss / self.steps_gradient_accumulation 
+    avgloss = totalloss / self.steps_gradient_accumulation
+    if self.cp_mode:
+      reduced = torch.tensor(avgloss, device=self.device)
+      dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+      avgloss = (reduced / self.world_size).item()
 
     # cliip gradients if they exceed max
     if self.ep_mode:
