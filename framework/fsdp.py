@@ -4,18 +4,18 @@ from torch import nn
 import torch.distributed as dist
 import math
 
-# FSDP (fully sharded data paralellism)
+# fsdp: each rank owns part of the model weights
 
 class GatherShardedWeight(torch.autograd.Function): 
-  # pytorch autograd doesnt know how to backprop through dist.allgather, so we write a wrapper class
+  # all-gather weights in forward, reduce-scatter their gradients in backward
   @staticmethod
   def forward(ctx, shard, shape, numel, group):
       ctx.group = group
-      return gather_params(shard, shape, numel, group=group) #reconstructs the weights
+      return gather_params(shard, shape, numel, group=group)
 
   @staticmethod
   def backward(ctx, grad_output):
-      grad_shard = reduce_scatter_gradients(grad_output, group=ctx.group) # gets gradient, then reduce scatters so all ranks have their own gradients
+      grad_shard = reduce_scatter_gradients(grad_output, group=ctx.group)
 
       return grad_shard, None, None, None
 
@@ -37,7 +37,7 @@ class ShardedLinear(nn.Module):
   def forward(self, x):
     weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel, self.group)
 
-    # x * W + b, except no b
+    # use the gathered weight for this forward pass
     output = nn.functional.linear(input=x, weight=weights, bias = None)
 
     return output
@@ -96,10 +96,10 @@ class ShardedExperts(nn.Module):
 
           flattened_weights.append(weight.detach().reshape(-1))
 
-        # Combine every expert's weights into one tensor
+    # concatenate the expert weights before sharding
     combined_weights = torch.cat(flattened_weights)
 
-        # Each rank permanently owns only its shard
+    # each rank keeps its own shard
     shard, shape, numel = parameter_sharding(combined_weights, group=group)
 
     self.weightshard = nn.Parameter(shard)
@@ -122,20 +122,20 @@ class ShardedExperts(nn.Module):
 
       if tokenindices.numel() == 0: continue
 
-        # Three matrices per expert, in constructor order
+      # up, gate, and down matrices for this expert
       up_weight = matrices[3 * expert_idx]
       gate_weight = matrices[3 * expert_idx + 1]
       down_weight = matrices[3 * expert_idx + 2]
 
       tokens = tokenstates[tokenindices]
 
-        # SwiGLU expert computation
+      # swiglu expert computation
       up = nn.functional.linear(tokens, up_weight)
       gate = nn.functional.silu(nn.functional.linear(tokens, gate_weight))
 
       expert_output = nn.functional.linear(up * gate, down_weight)
 
-        # Apply router weights
+      # weight the output by the router probability
       router_weights = topkweights[tokenindices, whichoftopk].unsqueeze(-1)
 
       output = output.index_add(0, tokenindices, router_weights * expert_output)
@@ -280,8 +280,7 @@ def shard_local_modules(module, group=None):
       continue
     setattr(module, name, replacement)
 
-  # Expert loops must enter all FSDP collectives in the same order,
-  # including experts receiving no tokens on one data-parallel rank.
+  # every rank must enter fsdp collectives, even for unused experts
   if module.__class__.__name__ in ("MoE", "ExpertParallel"):
     module.fsdp_mode = True
   return module

@@ -3,7 +3,8 @@ name: Hybrid subgroup communication correctness
 on:
   push:
     branches:
-      - hybrid-mesh
+      - main
+      - cleanup-hybrid-code-style
     paths:
       - "framework/**"
       - "tests/test_parallel_groups.py"

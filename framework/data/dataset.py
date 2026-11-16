@@ -1,18 +1,12 @@
-from transformers import AutoTokenizer
 import torch
-from torch.utils.data import IterableDataset, DataLoader
+from datasets import load_dataset
+from torch.utils.data import DataLoader, IterableDataset
+from transformers import AutoTokenizer
 
-# im just using the qwen native tokenizer
 
+# qwen's tokenizer
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
 
-# test = "hello how are u"
-# tokens = tokenizer.encode(test)
-# print(tokens)
-
-# print(tokenizer.decode(tokens))
-
-from datasets import load_dataset
 
 def build_fineweb_dataset(tokenizer, sequencelen, rank=0, world_size=1):
     documents = load_dataset(
@@ -30,43 +24,38 @@ def build_fineweb_dataset(tokenizer, sequencelen, rank=0, world_size=1):
 
     return TextDataset(documents, tokenizer, sequencelen)
 
+
 class TextDataset(IterableDataset):
-  def __init__(self, documents, tokenizer, sequencelen):
-    
-    self.documents = documents
-    self.tokenizer = tokenizer
-    self.sequencelen = sequencelen
+    def __init__(self, documents, tokenizer, sequencelen):
+        self.documents = documents
+        self.tokenizer = tokenizer
+        self.sequencelen = sequencelen
+        self.buffer = []
+        self.samples_seen = 0
 
-    self.buffer = []
-    self.samples_seen = 0
-  
-  def __iter__(self):
-    # how do we produce trainign examples 
-    buffer = []
-    samplestoskip = self.samples_seen
+    def __iter__(self):
+        buffer = []
+        samplestoskip = self.samples_seen
 
-    for document in self.documents:
-      text = document["text"] if isinstance(document, dict) else document
-      tokens = self.tokenizer.encode(text, add_special_tokens=False)
-      tokens.append(self.tokenizer.eos_token_id)
-      buffer.extend(tokens)
+        for document in self.documents:
+            text = document["text"] if isinstance(document, dict) else document
+            tokens = self.tokenizer.encode(text, add_special_tokens=False)
+            tokens.append(self.tokenizer.eos_token_id)
+            buffer.extend(tokens)
 
-      while len(buffer) >= self.sequencelen + 1:
+            while len(buffer) >= self.sequencelen + 1:
+                first = buffer[:self.sequencelen + 1]
+                buffer = buffer[self.sequencelen + 1:]
 
-        first = buffer[:self.sequencelen + 1]
-        buffer = buffer[self.sequencelen + 1:]
+                if samplestoskip > 0:
+                    samplestoskip -= 1
+                    continue
 
-        if samplestoskip > 0:
-          samplestoskip -= 1
-          continue
-        
-        self.samples_seen += 1
+                self.samples_seen += 1
+                yield torch.tensor(first, dtype=torch.long)
 
-        yield torch.tensor(first, dtype=torch.long)
+    def state(self):
+        return self.samples_seen
 
-  def state(self):
-    return self.samples_seen
-
-  def load_state(self, state):
-    self.samples_seen = state
-
+    def load_state(self, state):
+        self.samples_seen = state

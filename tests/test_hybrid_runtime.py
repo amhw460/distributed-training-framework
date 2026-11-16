@@ -1,7 +1,4 @@
-"""Check that uninterrupted and resumed mesh training produce equivalent updates.
-
-torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_runtime --dp 2 --tp 2
-"""
+"""Check optimizer steps, metrics and checkpoint resume against a full run."""
 import argparse
 import os
 import tempfile
@@ -61,8 +58,7 @@ def run():
         assert uninterrupted.last_metrics["step_time_s"] > 0
         assert uninterrupted.last_metrics["tokens_per_sec"] > 0
 
-        # torchrun supplies the same rendezvous port to each rank. Avoid
-        # broadcast_object_list (which requires NumPy in PyTorch's CPU build).
+        # use the same checkpoint folder on all ranks without object broadcasts
         folder = Path(tempfile.gettempdir()) / f"hybrid-resume-{os.environ['MASTER_PORT']}"
         interrupted = make_trainer(mesh, args)
         interrupted.training_step(batch(mesh, 0))

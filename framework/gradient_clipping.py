@@ -5,12 +5,12 @@ from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearP
 
 def clip_hybrid_grad_norm_(model, max_norm, group=None):
 
-    # hybrid gradient clipping for fsdp
+    # compute global gradient norm across the shards
     
     sharded_parameter_ids = {id(module.weightshard) for module in model.modules() if 
     isinstance(module,(ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts))}
 
-    # if its ddp just use regular thing
+    # use regular clipping for replicated weights
     if not sharded_parameter_ids:
         return torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm).item()
 
@@ -37,7 +37,7 @@ def clip_hybrid_grad_norm_(model, max_norm, group=None):
     global_norm = (replicated_norm_sq + sharded_norm_sq).sqrt()
     clip_coefficient = min(1.0, max_norm / (global_norm.item() + 1e-6))
 
-    # scaling coefficient is same
+    # apply the same scaling factor to every rank
 
     with torch.no_grad():
         for parameter in parameters:
@@ -73,11 +73,11 @@ def clip_tp_grad_norm_(model, max_norm, group=None):
         else:
             replicated_norm_sq += contribution
 
-    # Combine contributions from different TP weight shards
+    # add the norm contributions from tp weight shards
     if dist.is_initialized() and dist.get_world_size() > 1:
         dist.all_reduce(sharded_norm_sq, op=dist.ReduceOp.SUM, group=group)
 
-    # Replicated parameters should only be counted once
+    # count replicated parameters only once
     global_norm = (sharded_norm_sq + replicated_norm_sq).sqrt()
 
     clip_coefficient = min(1.0, max_norm / (global_norm.item() + 1e-6))

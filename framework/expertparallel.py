@@ -50,7 +50,7 @@ class ExpertParallel(nn.Module):
     tokenstates = tokens.reshape(-1, shape[-1])
     topkweights, topkindices, _ = self.router(tokenstates)
 
-    # Every selected expert gets a copy of its token, grouped by owning rank.
+    # send each selected token to the rank that owns its expert
     expertids = topkindices.reshape(-1)
     destinations = expertids // self.experts_per_rank
     order = torch.argsort(destinations, stable=True)
@@ -69,16 +69,14 @@ class ExpertParallel(nn.Module):
     senttokens = tokenstates.repeat_interleave(self.model_args.k, dim=0)[order]
     received = AllToAll.apply(senttokens, sendcounts, recvcounts, self.group)
 
-    # Run only experts assigned to this rank.
-    # Multiplying by zero keeps the backward communication alive even if
-    # this rank receives no tokens for any local expert.
+    # keep autograd connected even if this rank gets no tokens
     localoutput = received * 0
     for i, expert in enumerate(self.experts):
       indices = torch.where(receivedids == self.start + i)[0]
       if indices.numel() == 0 and not getattr(self, 'fsdp_mode', False): continue
       localoutput = localoutput.index_add(0, indices, expert(received[indices]))
 
-    # Send expert outputs back, restore top-k order, then weighted-sum per token.
+    # send outputs back to their tokens and combine using router weights
     returned = AllToAll.apply(localoutput, recvcounts, sendcounts, self.group)
     returned = returned[torch.argsort(order)]
     tokenindices = torch.arange(tokenstates.shape[0], device=tokens.device).repeat_interleave(self.model_args.k)
@@ -96,8 +94,7 @@ def parallelize_ep(model, group=None):
 
 
 def synchronize_ep_gradients(model, group=None):
-  # Experts already received gradient contributions from all token-owning ranks.
-  # Everything else is replicated and must be all-reduced as in DDP.
+  # expert gradients stay local; shared weights need all-reduce
   total_nodes = dist.get_world_size(group=group)
   expertparams = {id(p) for module in model.modules() if isinstance(module, ExpertParallel)
                   for expert in module.experts for p in expert.parameters()}

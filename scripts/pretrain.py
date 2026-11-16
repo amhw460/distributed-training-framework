@@ -1,4 +1,4 @@
-"""Configurable DDP or FSDP training for Qwen3-MoE.
+"""Run standalone ddp, fsdp, ep, or cp training for Qwen3-MoE.
 
 Examples (CPU/Gloo):
     torchrun --standalone --nproc-per-node=2 -m scripts.pretrain --synthetic --parallelism fsdp

@@ -47,7 +47,7 @@ def main():
     parser.add_argument("--resume", default=None, help="Checkpoint step directory")
     options = parser.parse_args()
 
-    # Validate before launching distributed collectives.
+    # validate arguments before starting distributed operations
     if options.steps < 1: parser.error("--steps must be positive")
     if options.schedule_steps is not None and options.schedule_steps < options.steps:
         parser.error("--schedule-steps must be >= --steps")

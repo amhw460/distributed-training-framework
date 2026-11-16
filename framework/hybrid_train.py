@@ -1,23 +1,26 @@
-"""Minimal mesh-driven Qwen3 trainer; no hard-coded pairwise strategy modes.
-
-Each mesh axis has one job:
-PP communicates microbatch activations; EP dispatches routed tokens; TP
-splits matrices; CP splits sequences; FSDP shards local weights; DP averages
-replica gradients. Gradients are normalized once after backward.
-"""
-from pathlib import Path
+"""Train Qwen3 with whatever parallelism dimensions the mesh specifies."""
 import time
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from framework.expertparallel import ExpertParallel
-from framework.fsdp import ShardedEmbedding, ShardedExperts, ShardedLinear, ShardedRMSNorm, ShardedTensorParallelLinear
-from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism, synchronize_tp_head_norm_gradients
+from framework.fsdp import (
+    ShardedEmbedding, ShardedExperts, ShardedLinear,
+    ShardedRMSNorm, ShardedTensorParallelLinear,
+)
 from framework.pipelineparallel import forward_microbatch, backward_microbatch
+from framework.tensorparallel import (
+    ColumnwiseLinearParallelism, RowwiseLinearParallelism,
+    synchronize_tp_head_norm_gradients,
+)
 
 
-FSDP_TYPES = (ShardedEmbedding, ShardedExperts, ShardedLinear, ShardedRMSNorm, ShardedTensorParallelLinear)
+FSDP_TYPES = (
+    ShardedEmbedding, ShardedExperts, ShardedLinear,
+    ShardedRMSNorm, ShardedTensorParallelLinear,
+)
 TP_TYPES = (ColumnwiseLinearParallelism, RowwiseLinearParallelism)
 
 
@@ -40,23 +43,21 @@ def _fsdp_parameter_ids(model):
 
 
 def synchronize_hybrid_gradients(model, mesh):
-    """Synchronize only replicated dimensions; never mix unrelated shards."""
+    """Only sync weights that are supposed to be replicated."""
     params = list(model.parameters())
     expert_ids = _expert_parameter_ids(model)
 
-    # TP RMSNorm weights are shared across heads but see partial gradients.
+    # rmsnorm weights are shared across tp ranks, so we need to sync their gradients
     if mesh.size("tp") > 1:
         layers = model.layers if hasattr(model, "layers") else model.transformerlayers
         class LocalModel:
             transformerlayers = layers
         synchronize_tp_head_norm_gradients(LocalModel(), group=mesh.group("tp"))
 
-    # CP owns disjoint sequence positions of a single training example.
-    # Each local loss is normalized by its local token count, so average CP.
+    # cp ranks each see different positions of the same sequence
     if mesh.size("cp") > 1:
         for p in params:
-            # Sparse expert routing may leave p.grad absent on only some CP
-            # ranks. Every rank must still issue collectives in the same order.
+            # some experts might not get any tokens, but all ranks still need to sync
             present = torch.tensor(int(p.grad is not None), device=p.device)
             dist.all_reduce(present, group=mesh.group("cp"))
             if present.item() == 0:
@@ -67,9 +68,7 @@ def synchronize_hybrid_gradients(model, mesh):
             if p.grad is None:
                 p.grad = grad
 
-    # EP experts own disjoint expert indices. Routing backward has already
-    # summed contributions to their owner; normalize by number of EP batches.
-    # Dense and router weights are replicated and need EP all-reduce.
+    # expert weights belong to their ep rank; shared weights need all-reduce
     if mesh.size("ep") > 1:
         for p in params:
             if id(p) in expert_ids:
@@ -86,8 +85,7 @@ def synchronize_hybrid_gradients(model, mesh):
             if p.grad is None:
                 p.grad = grad
 
-    # FSDP reduce-scatter has already averaged the independently loaded
-    # data across FSDP ranks. DP is an additional replica dimension.
+    # fsdp handles its own gradient sync; dp ranks still need to average
     if mesh.size("dp") > 1:
         for p in params:
             present = torch.tensor(int(p.grad is not None), device=p.device)
@@ -112,8 +110,7 @@ def clip_hybrid_gradients(model, mesh, max_norm):
         raise ValueError("model has no parameters")
     sq = torch.zeros((), dtype=torch.float64, device=params[0].device)
 
-    # Sum across the entire world, weighting each replicated copy to count
-    # each logical weight once. PP/EP/TP/FSDP-owned shards count exactly once.
+    # only count each logical parameter once, even if it is replicated
     for p in params:
         if p.grad is None:
             continue
@@ -150,10 +147,7 @@ def data_replica_count(mesh):
 
 
 def create_batch_group(mesh):
-    """Each group shares one batch across PP, CP and TP ranks.
-
-    Every rank creates all groups in deterministic order.
-    """
+    """Share a batch across pp, cp and tp ranks of the same data replica."""
     from itertools import product
     my_group = None
     my_leader = None
@@ -169,7 +163,7 @@ def create_batch_group(mesh):
 
 
 def broadcast_replica_batch(batch, mesh, batch_group, leader, shape, device):
-    """Leader loads unique data; each cooperating rank receives the same tokens."""
+    """Broadcast the replica's tokens to the other model-parallel ranks."""
     if mesh.global_rank != leader:
         batch = torch.empty(shape, device=device, dtype=torch.long)
     elif tuple(batch.shape) != tuple(shape):
@@ -210,7 +204,7 @@ class HybridTrainer:
             loss.backward()
             return loss.detach()
 
-        # GPipe: all forward microbatches followed by reverse backward order.
+        # gpipe sends all microbatches forward before doing backward in reverse
         micro_x = x.tensor_split(self.microbatches, dim=0)
         micro_y = y.tensor_split(self.microbatches, dim=0)
         saved = []
@@ -256,7 +250,7 @@ class HybridTrainer:
         batch_tokens = sum(batch.shape[0] * (batch.shape[1] - 1) for batch in batches)
         global_tokens = batch_tokens * data_replica_count(self.mesh)
         self.tokens_seen += global_tokens
-        # Each pipeline stage must see the same logged average.
+        # average the loss across replicas, including ranks on other pipeline stages
         value = loss.clone()
         dist.all_reduce(value, op=dist.ReduceOp.SUM)
         value /= self.mesh.world_size // self.mesh.size("pp")
@@ -279,7 +273,7 @@ class HybridTrainer:
         return value.item(), norm
 
     def save(self, folder, model_args):
-        """Rank-local checkpoint, including optimizer, RNG and mesh metadata."""
+        """Save this rank's weights and training state so we can resume later."""
         directory = Path(folder) / f"step-{self.step}"
         directory.mkdir(parents=True, exist_ok=True)
         payload = {

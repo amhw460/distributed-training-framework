@@ -1,14 +1,13 @@
-"""Compose existing Qwen3 parallelism primitives in a fixed order.
+"""Apply the selected parallelism strategies to the Qwen3 model."""
 
-The mesh selects which algorithms run; combinations are not enumerated.
-"""
 from dataclasses import dataclass
+
+from framework.contextparallel import parallelize_cp
+from framework.expertparallel import ExpertParallel
+from framework.fsdp import shard_local_modules
 from framework.hybrid import HybridPlan
 from framework.pipelineparallel import PipelineStage
-from framework.expertparallel import ExpertParallel
 from framework.tensorparallel import parallelize_attn, parallelize_moe
-from framework.contextparallel import parallelize_cp
-from framework.fsdp import shard_local_modules
 
 
 @dataclass
@@ -19,7 +18,8 @@ class ComposedModel:
 
 def compose_model(model, mesh, sequence_length):
     plan = HybridPlan(mesh, model.model_args, sequence_length)
-    # Pipeline stage partitioning must occur before local tensor partitioning.
+
+    # split the layers into pipeline stages before sharding anything else
     if mesh.size("pp") > 1:
         local = PipelineStage(model, mesh.rank("pp"), mesh.size("pp"))
         layers = local.layers
@@ -27,6 +27,7 @@ def compose_model(model, mesh, sequence_length):
         local = model
         layers = local.transformerlayers
 
+    # each ep rank owns a different set of experts
     if mesh.size("ep") > 1:
         for layer in layers:
             layer.moe = ExpertParallel(
@@ -47,6 +48,7 @@ def compose_model(model, mesh, sequence_length):
         else:
             parallelize_cp(local, group=mesh.group("cp"))
 
+    # fsdp shards whatever weights are left on this rank
     if mesh.size("fsdp") > 1:
         local = shard_local_modules(local, group=mesh.group("fsdp"))
 

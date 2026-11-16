@@ -1,8 +1,4 @@
-"""Compare real hybrid optimizer updates against dense Qwen3 training.
-
-4 ranks: torchrun --standalone --nproc-per-node=4 \
-  -m tests.test_hybrid_dense_reference --dp 2 --tp 2
-"""
+"""Compare distributed Qwen3 updates against the unsharded model."""
 import argparse
 import math
 import re
@@ -23,7 +19,7 @@ def dense_parameter_name(name, mesh):
     if name.startswith("layers."):
         match = re.match(r"layers\.(\d+)\.(.+)", name)
         assert match is not None
-        # PP stages contain contiguous layers.
+        # pp ranks own consecutive layers
         layer_start = mesh.rank("pp") * (4 // mesh.size("pp")) + min(mesh.rank("pp"), 4 % mesh.size("pp"))
         name = "transformerlayers." + str(layer_start + int(match.group(1))) + "." + match.group(2)
     match = re.search(r"\.moe\.experts\.(\d+)\.", name)

@@ -3,7 +3,8 @@ name: Hybrid placement planning
 on:
   push:
     branches:
-      - hybrid-mesh
+      - main
+      - cleanup-hybrid-code-style
     paths:
       - "framework/hybrid.py"
       - "framework/parallel_mesh.py"

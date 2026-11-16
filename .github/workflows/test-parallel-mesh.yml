@@ -3,7 +3,8 @@ name: Hybrid device mesh correctness
 on:
   push:
     branches:
-      - hybrid-mesh
+      - main
+      - cleanup-hybrid-code-style
     paths:
       - "framework/parallel_mesh.py"
       - "tests/test_parallel_mesh.py"
