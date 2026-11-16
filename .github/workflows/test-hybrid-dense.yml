@@ -1,7 +1,7 @@
 name: Hybrid dense-reference correctness
 on:
   push:
-    branches: [hybrid-mesh]
+    branches: [main, cleanup-hybrid-code-style]
     paths:
       - "framework/**"
       - "tests/test_hybrid_dense_reference.py"
