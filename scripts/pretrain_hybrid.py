@@ -203,7 +203,7 @@ def main():
                 if cfg.metrics_file is not None:
                     cfg.metrics_file.parent.mkdir(parents=True, exist_ok=True)
                     with cfg.metrics_file.open("a", encoding="utf-8") as stream:
-                        stream.write(json.dumps(metrics) + "\\n")
+                        stream.write(json.dumps(metrics) + "\n")
             if cfg.checkpoint_dir and cfg.save_every and trainer.step % cfg.save_every == 0:
                 trainer.save(cfg.checkpoint_dir, args)
 
