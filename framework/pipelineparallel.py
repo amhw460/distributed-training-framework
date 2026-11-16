@@ -39,8 +39,11 @@ class PipelineStage(nn.Module):
   def forward(self, x):
     tensor = self.embeddings(x) if self.embeddings is not None else x
 
+    offset = getattr(self, "cp_rank", 0) * tensor.shape[1]
+    cosine = self.rope_cosine_values[offset:offset + tensor.shape[1]]
+    sine = self.rope_sine_values[offset:offset + tensor.shape[1]]
     for layer in self.layers:
-      tensor = layer(tensor, self.rope_cosine_values, self.rope_sine_values)
+      tensor = layer(tensor, cosine, sine)
 
     if self.outputprojection is not None:
       tensor = self.outputprojection(self.finalRMSnorm(tensor))
