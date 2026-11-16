@@ -31,7 +31,9 @@ def run():
     denseoptimizer = torch.optim.AdamW(dense.parameters(), lr=config.lr)
     cpoptimizer = torch.optim.AdamW(cp.parameters(), lr=config.lr)
 
-    dense_trainer = Trainer(dense, denseoptimizer, torch.device("cpu"), config)
+    denseconfig = copy.copy(config)
+    denseconfig.global_batch_size = 2 * total_nodes
+    dense_trainer = Trainer(dense, denseoptimizer, torch.device("cpu"), denseconfig)
     cp_trainer = Trainer(cp, cpoptimizer, torch.device("cpu"), config, cp_mode=True)
 
     dense_trainer.steps_gradient_accumulation = 2
