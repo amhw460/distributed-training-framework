@@ -75,7 +75,7 @@ class ExpertParallel(nn.Module):
     localoutput = received * 0
     for i, expert in enumerate(self.experts):
       indices = torch.where(receivedids == self.start + i)[0]
-      if indices.numel() == 0: continue
+      if indices.numel() == 0 and not getattr(self, 'fsdp_mode', False): continue
       localoutput = localoutput.index_add(0, indices, expert(received[indices]))
 
     # Send expert outputs back, restore top-k order, then weighted-sum per token.
