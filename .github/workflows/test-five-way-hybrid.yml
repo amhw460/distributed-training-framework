@@ -1,0 +1,26 @@
+name: Five-way hybrid CPU distributed training
+on:
+  push:
+    branches: [test-five-way-hybrid]
+    paths:
+      - "tests/test_five_way_hybrid.py"
+      - ".github/workflows/test-five-way-hybrid.yml"
+  workflow_dispatch:
+
+jobs:
+  five-way:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Train Qwen3 MoE with all five parallelism dimensions
+        env:
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+        run: python -m tests.test_five_way_hybrid
