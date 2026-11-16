@@ -3,7 +3,7 @@ import torch.distributed as dist
 from framework.fsdp import ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts
 from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
 
-def clip_hybrid_grad_norm_(model, max_norm):
+def clip_hybrid_grad_norm_(model, max_norm, group=None):
 
     # hybrid gradient clipping for fsdp
     
@@ -32,7 +32,7 @@ def clip_hybrid_grad_norm_(model, max_norm):
             replicated_norm_sq += contribution
 
     if dist.is_initialized() and dist.get_world_size() > 1:
-        dist.all_reduce(sharded_norm_sq, op=dist.ReduceOp.SUM)
+        dist.all_reduce(sharded_norm_sq, op=dist.ReduceOp.SUM, group=group)
 
     global_norm = (replicated_norm_sq + sharded_norm_sq).sqrt()
     clip_coefficient = min(1.0, max_norm / (global_norm.item() + 1e-6))
@@ -47,7 +47,7 @@ def clip_hybrid_grad_norm_(model, max_norm):
     return global_norm.item()
 
 
-def clip_tp_grad_norm_(model, max_norm):
+def clip_tp_grad_norm_(model, max_norm, group=None):
     sharded_types = (ColumnwiseLinearParallelism, RowwiseLinearParallelism)
 
     sharded_parameter_ids = {id(module.weight) for module in model.modules() if isinstance(module, sharded_types)}
@@ -75,7 +75,7 @@ def clip_tp_grad_norm_(model, max_norm):
 
     # Combine contributions from different TP weight shards
     if dist.is_initialized() and dist.get_world_size() > 1:
-        dist.all_reduce(sharded_norm_sq, op=dist.ReduceOp.SUM)
+        dist.all_reduce(sharded_norm_sq, op=dist.ReduceOp.SUM, group=group)
 
     # Replicated parameters should only be counted once
     global_norm = (sharded_norm_sq + replicated_norm_sq).sqrt()
@@ -89,7 +89,7 @@ def clip_tp_grad_norm_(model, max_norm):
 
     return global_norm.item()
 
-def clip_pp_grad_norm_(stage, max_norm):
+def clip_pp_grad_norm_(stage, max_norm, group=None):
     """Clip disjoint pipeline-stage gradients using one global norm."""
     if max_norm <= 0:
         raise ValueError("max_norm must be positive")
@@ -104,7 +104,7 @@ def clip_pp_grad_norm_(stage, max_norm):
             local_sq += param.grad.detach().to(torch.float64).square().sum()
 
     if dist.is_initialized() and dist.get_world_size() > 1:
-        dist.all_reduce(local_sq, op=dist.ReduceOp.SUM)
+        dist.all_reduce(local_sq, op=dist.ReduceOp.SUM, group=group)
 
     global_norm = local_sq.sqrt().item()
     coefficient = min(1.0, max_norm / (global_norm + 1e-6))
