@@ -1,17 +1,11 @@
-"""Pure planning of Qwen3-MoE placement on a ParallelMesh.
-
-This module does not mutate a model or perform communication. It describes
-which rank owns each layer/expert and the logical TP tensor slices. FSDP is
-recorded as a requested *subsequent* sharding step; no FSDP physical offsets
-are invented until the transformed tensors and packing policy are known.
-"""
+"""Figure out which layers, experts and tensor slices each rank owns."""
 
 from dataclasses import dataclass
 import re
 
 
 def _partition(length, parts, index):
-    """Contiguous, approximately equal partition (same as tensor_split)."""
+    """Split a dimension into almost equally sized chunks."""
     quotient, remainder = divmod(length, parts)
     start = index * quotient + min(index, remainder)
     end = start + quotient + (index < remainder)
@@ -44,7 +38,7 @@ class ParameterPlacement:
 
 
 class HybridPlan:
-    """Placement description for an unmodified dense Qwen3Model."""
+    """Keep track of model placement before actually sharding weights."""
 
     def __init__(self, mesh, model_args, sequence_length):
         self.mesh = mesh
@@ -80,8 +74,12 @@ class HybridPlan:
         if rank is None:
             rank = self.mesh.global_rank
         coords = self._coords(rank)
-        start, end = _partition(self.args.numlayers, self.mesh.size("pp"), coords["pp"])
-        expert_start, expert_end = _partition(self.args.experts, self.mesh.size("ep"), coords["ep"])
+        start, end = _partition(
+            self.args.numlayers, self.mesh.size("pp"), coords["pp"]
+        )
+        expert_start, expert_end = _partition(
+            self.args.experts, self.mesh.size("ep"), coords["ep"]
+        )
         q = _partition(self.args.numheads, self.mesh.size("tp"), coords["tp"])
         kv = _partition(self.args.numkvheads, self.mesh.size("tp"), coords["tp"])
         seq = _partition(self.sequence_length, self.mesh.size("cp"), coords["cp"])
@@ -93,15 +91,14 @@ class HybridPlan:
             query_heads=q,
             kv_heads=kv,
             sequence_tokens=seq,
-            # TP/CP/PP cooperate on the same input stream. DP, FSDP and
-            # EP ranks independently contribute data in the present algorithms.
+            # tp, cp and pp share a batch; dp, fsdp and ep get different data
             input_replica=(coords["dp"], coords["fsdp"], coords["ep"]),
             embedding_owner=coords["pp"] == 0,
             output_owner=coords["pp"] == self.mesh.size("pp") - 1,
         )
 
     def parameter(self, name, shape, rank=None):
-        """Describe a dense parameter on one rank, before real transformations."""
+        """Find where a parameter lives before we transform the model."""
         location = self.placement(rank)
         shape = tuple(shape)
         present = True
@@ -118,7 +115,9 @@ class HybridPlan:
             layer_index, suffix = int(match.group(1)), match.group(2)
             present = layer_index in location.layers
 
-            expert = re.fullmatch(r"moe\.experts\.(\d+)\.(up_proj|gate|down_proj)\.weight", suffix)
+            expert = re.fullmatch(
+                r"moe\.experts\.(\d+)\.(up_proj|gate|down_proj)\.weight", suffix
+            )
             if expert:
                 present &= int(expert.group(1)) in location.experts
                 tp_axis = 1 if expert.group(2) == "down_proj" else 0
@@ -136,7 +135,9 @@ class HybridPlan:
         interval = None
         post_tp_shape = list(shape)
         if tp_axis is not None:
-            interval = _partition(shape[tp_axis], self.mesh.size("tp"), location.coordinates["tp"])
+            interval = _partition(
+                shape[tp_axis], self.mesh.size("tp"), location.coordinates["tp"]
+            )
             post_tp_shape[tp_axis] = interval[1] - interval[0]
 
         return ParameterPlacement(
@@ -150,15 +151,19 @@ class HybridPlan:
         )
 
     def parameter_owners(self, name, shape):
-        """Global ranks holding all or part of this logical parameter."""
-        return tuple(rank for rank in range(self.mesh.world_size)
-                     if self.parameter(name, shape, rank).present)
+        """Ranks that hold at least part of this weight."""
+        return tuple(
+            rank for rank in range(self.mesh.world_size)
+            if self.parameter(name, shape, rank).present
+        )
 
     def describe(self):
         lines = [
             "Hybrid plan (placement only, not applied to a model)",
             "Active strategies: " + (", ".join(self.active_strategies) or "none"),
-            "Dimensions: " + ", ".join(f"{axis}={self.mesh.size(axis)}" for axis in self.mesh.DIMENSIONS),
+            "Dimensions: " + ", ".join(
+                f"{axis}={self.mesh.size(axis)}" for axis in self.mesh.DIMENSIONS
+            ),
         ]
         for rank in range(self.mesh.world_size):
             place = self.placement(rank)
