@@ -1,0 +1,46 @@
+name: Hybrid training runtime and resume
+on:
+  push:
+    branches: [hybrid-mesh]
+    paths:
+      - "framework/hybrid_train.py"
+      - "framework/training/runtime.py"
+      - "framework/training/lr_scheduler.py"
+      - "scripts/pretrain_hybrid.py"
+      - "tests/test_hybrid_runtime.py"
+      - ".github/workflows/test-hybrid-runtime.yml"
+  workflow_dispatch:
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Scheduled training and exact resume
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=1 -m tests.test_hybrid_runtime
+          torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_runtime --dp 2 --tp 2
+      - name: Optimizer schedule and metrics
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=2 -m scripts.pretrain_hybrid --synthetic --dp 2 --steps 3 --optimizer sgd --momentum 0.2 --scheduler cosine --warmup-steps 1 --decay-ratio 0.5 --metrics-file /tmp/hybrid-runtime-metrics.jsonl
+          python - <<'PY'
+          import json
+          with open("/tmp/hybrid-runtime-metrics.jsonl", encoding="utf-8") as source:
+              rows = [json.loads(line) for line in source]
+          assert len(rows) == 3
+          assert [m["step"] for m in rows] == [1, 2, 3]
+          assert [m["tokens_seen"] for m in rows] == [32, 64, 96]
+          assert all(m["step_time_s"] > 0 and m["tokens_per_sec"] > 0 for m in rows)
+          assert rows[0]["lr"] != rows[-1]["lr"]
+          print("PASS: hybrid optimizer scheduler and JSONL metrics")
+          PY
