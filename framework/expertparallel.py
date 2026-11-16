@@ -6,13 +6,14 @@ import torch.distributed as dist
 class AllToAll(torch.autograd.Function):
   # all_to_all needs its own backward to return activation gradients
   @staticmethod
-  def forward(ctx, tokens, sendcounts, recvcounts):
+  def forward(ctx, tokens, sendcounts, recvcounts, group):
     ctx.sendcounts = sendcounts
     ctx.recvcounts = recvcounts
+    ctx.group = group
 
     received = torch.empty((sum(recvcounts), *tokens.shape[1:]), dtype=tokens.dtype, device=tokens.device)
     dist.all_to_all_single(received, tokens.contiguous(),
-                          output_split_sizes=recvcounts, input_split_sizes=sendcounts)
+                          output_split_sizes=recvcounts, input_split_sizes=sendcounts, group=group)
     return received
 
   @staticmethod
@@ -20,16 +21,17 @@ class AllToAll(torch.autograd.Function):
     returned = torch.empty((sum(ctx.sendcounts), *gradients.shape[1:]),
                            dtype=gradients.dtype, device=gradients.device)
     dist.all_to_all_single(returned, gradients.contiguous(),
-                          output_split_sizes=ctx.sendcounts, input_split_sizes=ctx.recvcounts)
-    return returned, None, None
+                          output_split_sizes=ctx.sendcounts, input_split_sizes=ctx.recvcounts, group=ctx.group)
+    return returned, None, None, None
 
 
 class ExpertParallel(nn.Module):
-  def __init__(self, moe, rank, total_nodes):
+  def __init__(self, moe, rank, total_nodes, group=None):
     super().__init__()
 
     self.rank = rank
     self.total_nodes = total_nodes
+    self.group = group
     self.model_args = moe.model_args
 
     if not 0 <= rank < total_nodes: raise ValueError("invalid rank")
@@ -56,16 +58,16 @@ class ExpertParallel(nn.Module):
     sendcounts = torch.bincount(destinations, minlength=self.total_nodes).tolist()
     counts = torch.tensor(sendcounts, dtype=torch.long, device=tokens.device)
     receivedcounts = torch.empty_like(counts)
-    dist.all_to_all_single(receivedcounts, counts)
+    dist.all_to_all_single(receivedcounts, counts, group=self.group)
     recvcounts = receivedcounts.tolist()
 
     sentids = expertids[order].contiguous()
     receivedids = torch.empty(sum(recvcounts), dtype=torch.long, device=tokens.device)
     dist.all_to_all_single(receivedids, sentids,
-                          output_split_sizes=recvcounts, input_split_sizes=sendcounts)
+                          output_split_sizes=recvcounts, input_split_sizes=sendcounts, group=self.group)
 
     senttokens = tokenstates.repeat_interleave(self.model_args.k, dim=0)[order]
-    received = AllToAll.apply(senttokens, sendcounts, recvcounts)
+    received = AllToAll.apply(senttokens, sendcounts, recvcounts, self.group)
 
     # Run only experts assigned to this rank.
     # Multiplying by zero keeps the backward communication alive even if
@@ -77,7 +79,7 @@ class ExpertParallel(nn.Module):
       localoutput = localoutput.index_add(0, indices, expert(received[indices]))
 
     # Send expert outputs back, restore top-k order, then weighted-sum per token.
-    returned = AllToAll.apply(localoutput, recvcounts, sendcounts)
+    returned = AllToAll.apply(localoutput, recvcounts, sendcounts, self.group)
     returned = returned[torch.argsort(order)]
     tokenindices = torch.arange(tokenstates.shape[0], device=tokens.device).repeat_interleave(self.model_args.k)
     output = torch.zeros_like(tokenstates).index_add(
@@ -86,17 +88,17 @@ class ExpertParallel(nn.Module):
     return output.reshape(shape)
 
 
-def parallelize_ep(model):
-  rank, total_nodes = dist.get_rank(), dist.get_world_size()
+def parallelize_ep(model, group=None):
+  rank, total_nodes = dist.get_rank(group=group), dist.get_world_size(group=group)
   for layer in model.transformerlayers:
-    layer.moe = ExpertParallel(layer.moe, rank, total_nodes)
+    layer.moe = ExpertParallel(layer.moe, rank, total_nodes, group=group)
   return model
 
 
-def synchronize_ep_gradients(model):
+def synchronize_ep_gradients(model, group=None):
   # Experts already received gradient contributions from all token-owning ranks.
   # Everything else is replicated and must be all-reduced as in DDP.
-  total_nodes = dist.get_world_size()
+  total_nodes = dist.get_world_size(group=group)
   expertparams = {id(p) for module in model.modules() if isinstance(module, ExpertParallel)
                   for expert in module.experts for p in expert.parameters()}
 
@@ -106,16 +108,16 @@ def synchronize_ep_gradients(model):
       continue
 
     used = torch.tensor(int(param.grad is not None), device=param.device)
-    dist.all_reduce(used, op=dist.ReduceOp.SUM)
+    dist.all_reduce(used, op=dist.ReduceOp.SUM, group=group)
     if used.item() == 0: continue
 
     gradient = param.grad if param.grad is not None else torch.zeros_like(param)
-    dist.all_reduce(gradient, op=dist.ReduceOp.SUM)
+    dist.all_reduce(gradient, op=dist.ReduceOp.SUM, group=group)
     gradient.div_(total_nodes)
     if param.grad is None: param.grad = gradient
 
 
-def clip_ep_grad_norm_(model, max_norm):
+def clip_ep_grad_norm_(model, max_norm, group=None):
   # Count replicated weights once, and expert weights only on their owner.
   expertparams = {id(p) for module in model.modules() if isinstance(module, ExpertParallel)
                   for expert in module.experts for p in expert.parameters()}
@@ -124,9 +126,9 @@ def clip_ep_grad_norm_(model, max_norm):
   for param in parameters:
     if param.grad is None: continue
     contribution = param.grad.detach().double().square().sum()
-    normsq += contribution if id(param) in expertparams else contribution / dist.get_world_size()
+    normsq += contribution if id(param) in expertparams else contribution / dist.get_world_size(group=group)
 
-  dist.all_reduce(normsq, op=dist.ReduceOp.SUM)
+  dist.all_reduce(normsq, op=dist.ReduceOp.SUM, group=group)
   norm = normsq.sqrt().item()
   coefficient = min(1.0, max_norm / (norm + 1e-6))
   with torch.no_grad():
