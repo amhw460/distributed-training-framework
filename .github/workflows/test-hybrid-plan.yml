@@ -1,0 +1,33 @@
+name: Hybrid placement planning
+
+on:
+  push:
+    branches:
+      - hybrid-mesh
+    paths:
+      - "framework/hybrid.py"
+      - "framework/parallel_mesh.py"
+      - "framework/models/**"
+      - "tests/test_hybrid_plan.py"
+      - ".github/workflows/test-hybrid-plan.yml"
+  workflow_dispatch:
+
+jobs:
+  hybrid-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Validate single rank
+        run: torchrun --standalone --nproc-per-node=1 -m tests.test_hybrid_plan
+      - name: Validate TP and DP parameter ownership
+        run: torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_plan --dp 2 --tp 2
+      - name: Validate PP and EP ownership
+        run: torchrun --standalone --nproc-per-node=8 -m tests.test_hybrid_plan --pp 2 --ep 2 --tp 2
+      - name: Validate DP, FSDP and CP ownership
+        run: torchrun --standalone --nproc-per-node=8 -m tests.test_hybrid_plan --dp 2 --fsdp 2 --cp 2

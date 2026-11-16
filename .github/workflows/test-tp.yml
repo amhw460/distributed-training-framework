@@ -35,7 +35,10 @@ jobs:
           OMP_NUM_THREADS: "1"
         run: |
           torchrun --standalone --nproc-per-node=1 -m tests.test_parameter_variations --mode tp
-          torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode tp
+          for attempt in $(seq 1 8); do
+            echo "Three-rank TP regression attempt $attempt/8"
+            torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode tp
+          done
           torchrun --standalone --nproc-per-node=4 -m tests.test_parameter_variations --mode tp
           torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode fsdp
           torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode ddp

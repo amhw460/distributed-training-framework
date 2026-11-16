@@ -79,7 +79,7 @@ class MoE(nn.Module):
     for expert in range(self.model_args.experts):
       tokenindices, whichoftopk = torch.where(topkindices == expert)
 
-      if tokenindices.numel() == 0: continue
+      if tokenindices.numel() == 0 and not getattr(self, 'fsdp_mode', False): continue
 
       toks, weights = tokenstates[tokenindices], topkweights[tokenindices, whichoftopk]
 

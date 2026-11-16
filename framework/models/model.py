@@ -131,7 +131,7 @@ class GroupQueryAttention(nn.Module):
             # Ring attention expects keys with sequence before head dimension.
             keys = reshapedK.transpose(-2, -1).expand(-1, -1, headsRatio, -1, -1).contiguous()
             values = reshapedV.expand(-1, -1, headsRatio, -1, -1).contiguous()
-            attention = ring_attention(reshapedQ, keys, values)
+            attention = ring_attention(reshapedQ, keys, values, group=getattr(self, "cp_group", None))
         else:
             attention = reshapedQ @ reshapedK
             attention = attention / (self.model_args.head_dim) ** 0.5

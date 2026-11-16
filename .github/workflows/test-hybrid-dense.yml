@@ -1,0 +1,37 @@
+name: Hybrid dense-reference correctness
+on:
+  push:
+    branches: [hybrid-mesh]
+    paths:
+      - "framework/**"
+      - "tests/test_hybrid_dense_reference.py"
+      - ".github/workflows/test-hybrid-dense.yml"
+  workflow_dispatch:
+
+jobs:
+  dense:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Match dense reference on two axes
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          set -eux
+          for flags in '--dp 2 --tp 2' '--cp 2 --tp 2' '--ep 2 --tp 2' '--pp 2 --tp 2' '--fsdp 2 --tp 2' '--fsdp 2 --ep 2' '--pp 2 --cp 2'; do
+            torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_dense_reference $flags
+          done
+      - name: Match dense reference on three axes
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          set -eux
+          for flags in '--pp 2 --ep 2 --tp 2' '--dp 2 --fsdp 2 --cp 2'; do
+            torchrun --standalone --nproc-per-node=8 -m tests.test_hybrid_dense_reference $flags
+          done

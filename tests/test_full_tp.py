@@ -22,6 +22,25 @@ def compare(dense, tp, rank, world):
             full = original[full_name]
             dim = 0 if isinstance(module, ColumnwiseLinearParallelism) else 1
             expected = torch.tensor_split(full.detach(), world, dim=dim)[rank]
+            if not torch.allclose(module.weight.detach(), expected, rtol=1e-4, atol=2e-6):
+                diff = (module.weight.detach() - expected).abs()
+                index = diff.reshape(-1).argmax().item()
+                local_grad = module.weight.grad
+                dense_grad = torch.tensor_split(full.grad, world, dim=dim)[rank] if full.grad is not None else None
+                actual_gradient = local_grad.reshape(-1)[index].item() if local_grad is not None else None
+                reference_gradient = dense_grad.reshape(-1)[index].item() if dense_grad is not None else None
+                gradient_diff = ((local_grad - dense_grad).abs().max().item()
+                                 if local_grad is not None and dense_grad is not None else None)
+                print(
+                    f"TP weight diagnostic phase={getattr(tp, '_tp_verify_phase', 'unknown')} "
+                    f"rank={rank} name={name} index={index} "
+                    f"max_abs={diff.max().item():.9g} "
+                    f"actual={module.weight.detach().reshape(-1)[index].item():.9g} "
+                    f"expected={expected.reshape(-1)[index].item():.9g} "
+                    f"actual_grad={actual_gradient} reference_grad={reference_gradient} "
+                    f"max_grad_diff={gradient_diff}",
+                    flush=True,
+                )
             torch.testing.assert_close(module.weight.detach(), expected, rtol=1e-4, atol=2e-6, msg=f"weight: {name}")
             if full.grad is not None:
                 actual_grad = module.weight.grad
