@@ -1,7 +1,7 @@
 name: Hybrid training runtime and resume
 on:
   push:
-    branches: [hybrid-mesh]
+    branches: [main, cleanup-hybrid-code-style]
     paths:
       - "framework/hybrid_train.py"
       - "framework/training/runtime.py"
