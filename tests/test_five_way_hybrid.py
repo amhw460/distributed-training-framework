@@ -1,9 +1,7 @@
-"""Single-host CPU stress test of all five model-parallel axes together.
+"""Run a small Qwen3 training job with five parallelism dimensions on CPU.
 
-Fork-based CPU workers share read-only Python/PyTorch pages, avoiding the
-large duplicated interpreter footprint of 32 independent torchrun processes.
-The workers still use real torch.distributed Gloo process groups and collectives.
-Linux-only test runner, not the general training entry point.
+Forking lets the 32 workers share memory for the Python/PyTorch imports.
+The workers still communicate through real Gloo process groups.
 """
 import os
 import socket
@@ -56,8 +54,10 @@ def main():
         port = sock.getsockname()[1]
 
     print("Starting 32 real distributed CPU ranks for FSDP+TP+EP+CP+PP", flush=True)
-    mp.start_processes(_worker, args=(port,), nprocs=WORLD_SIZE,
-                       join=True, start_method="fork")
+    mp.start_processes(
+        _worker, args=(port,), nprocs=WORLD_SIZE,
+        join=True, start_method="fork",
+    )
     print("PASS: five-way FSDP+TP+EP+CP+PP training finished on 32 CPU ranks", flush=True)
 
 
