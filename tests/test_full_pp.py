@@ -1,12 +1,9 @@
-"""Compare GPipe Qwen3-MoE training against full-model training on CPU/Gloo.
-
-Run from the repository root:
-    torchrun --standalone --nproc-per-node=1 -m tests.test_full_pp
-    torchrun --standalone --nproc-per-node=2 -m tests.test_full_pp
-    torchrun --standalone --nproc-per-node=3 -m tests.test_full_pp
-
-Tests stage ownership, loss, local parameter gradients, and AdamW updates.
-"""
+# Compare GPipe Qwen3-MoE training against full-model training on CPU/Gloo.
+# Run from the repository root:
+# torchrun --standalone --nproc-per-node=1 -m tests.test_full_pp
+# torchrun --standalone --nproc-per-node=2 -m tests.test_full_pp
+# torchrun --standalone --nproc-per-node=3 -m tests.test_full_pp
+# Tests stage ownership, loss, local parameter gradients, and AdamW updates.
 import copy
 
 import torch

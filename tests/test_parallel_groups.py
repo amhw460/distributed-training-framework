@@ -1,4 +1,4 @@
-"""Make sure each parallelism strategy uses the right communication group."""
+# Make sure each parallelism strategy uses the right communication group.
 import argparse
 import copy
 

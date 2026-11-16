@@ -1,4 +1,4 @@
-"""Check optimizer steps, metrics and checkpoint resume against a full run."""
+# Check optimizer steps, metrics and checkpoint resume against a full run.
 import argparse
 import os
 import tempfile
@@ -19,10 +19,7 @@ def make_trainer(mesh, args):
     torch.manual_seed(501)
     model = compose_model(Qwen3Model(args), mesh, args.max_seq_len).model
     optimizer = build_optimizer(model.parameters(), name="adamw", lr=0.002, weight_decay=0.02)
-    schedule = build_hybrid_scheduler(
-        optimizer, name="cosine", steps=3, warmup_steps=1, decay_ratio=0.5,
-        min_lr_factor=0.2,
-    )
+    schedule = build_hybrid_scheduler(optimizer, name="cosine", steps=3, warmup_steps=1, decay_ratio=0.5, min_lr_factor=0.2)
     return HybridTrainer(model, mesh, optimizer, max_norm=0.5, microbatches=2,
                          scheduler=schedule, run_config={"test": "scheduled"})
 
@@ -41,10 +38,7 @@ def run():
     dist.init_process_group("gloo")
     try:
         mesh = ParallelMesh(**vars(flags))
-        args = Qwen3ModelArgs(
-            vocab_size=37, max_seq_len=8, dim=8, moe_inter_dim=12,
-            numlayers=4, numheads=4, numkvheads=2, head_dim=4, experts=4, k=2,
-        )
+        args = Qwen3ModelArgs(vocab_size=37, max_seq_len=8, dim=8, moe_inter_dim=12, numlayers=4, numheads=4, numkvheads=2, head_dim=4, experts=4, k=2)
         uninterrupted = make_trainer(mesh, args)
         losses = []
         for step in range(3):

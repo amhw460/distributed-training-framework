@@ -1,11 +1,8 @@
-"""Two-rank correctness checks for manual DDP.
-
-Run from the repository root:
-  torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \
-    --master-addr=127.0.0.1 --master-port=29501 -m tests.test_distributed
-
-No FineWeb download or GPU is required.
-"""
+# Two-rank correctness checks for manual DDP.
+# Run from the repository root:
+# torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \
+# --master-addr=127.0.0.1 --master-port=29501 -m tests.test_distributed
+# No FineWeb download or GPU is required.
 
 import shutil
 import tempfile
@@ -26,8 +23,8 @@ from framework.training.config import TrainingConfig
 from framework.training.trainer import Trainer
 
 
+# A tiny language model with one expert per rank to exercise missing gradients.
 class TinyMoE(nn.Module):
-    """A tiny language model with one expert per rank to exercise missing gradients."""
 
     def __init__(self):
         super().__init__()
@@ -42,8 +39,8 @@ class TinyMoE(nn.Module):
         return self.projection(torch.tanh(activations))
 
 
+# Checkpointable rank-specific batches without an external dataset.
 class DeterministicBatches:
-    """Checkpointable rank-specific batches without an external dataset."""
 
     def __init__(self, rank):
         self.rank = rank
@@ -103,11 +100,7 @@ def make_training_state(config, rank, folder):
 
 
 def test_train_and_resume(rank, world_size):
-    config = TrainingConfig(
-        steps=4, localbatchsize=1, globalbatchsize=4, seqlen=4,
-        learningrate=1e-3, maxnorm=1.0, seed=12345,
-        warmupsteps=1, decayratio=0.5, decaytype="cosine", min_lr=0.1,
-    )
+    config = TrainingConfig(steps=4, localbatchsize=1, globalbatchsize=4, seqlen=4, learningrate=1e-3, maxnorm=1.0, seed=12345, warmupsteps=1, decayratio=0.5, decaytype="cosine", min_lr=0.1)
 
     shared_path = [tempfile.mkdtemp(prefix="manual-ddp-") if rank == 0 else None]
     dist.broadcast_object_list(shared_path, src=0)
@@ -138,9 +131,7 @@ def test_train_and_resume(rank, world_size):
             actual = resumed_model.state_dict()[name]
             torch.testing.assert_close(actual, expected, rtol=0, atol=0, msg=f"Resume mismatch: {name}")
 
-        torch.testing.assert_close(
-            resumed.optimizer.state_dict(), baseline.optimizer.state_dict(), rtol=0, atol=0,
-        )
+        torch.testing.assert_close(resumed.optimizer.state_dict(), baseline.optimizer.state_dict(), rtol=0, atol=0)
         assert resumed.scheduler.last_epoch == baseline.scheduler.last_epoch
         assert resumed.state() == baseline.state()
         assert resumed_batches.state() == baseline_batches.state()

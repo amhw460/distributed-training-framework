@@ -1,7 +1,5 @@
-"""Smoke test GPipe global clipping and per-stage checkpoint round-trip.
-
-Run: torchrun --standalone --nproc-per-node=2 -m tests.test_pp_training
-"""
+# Smoke test GPipe global clipping and per-stage checkpoint round-trip.
+# Run: torchrun --standalone --nproc-per-node=2 -m tests.test_pp_training
 import tempfile
 from pathlib import Path
 

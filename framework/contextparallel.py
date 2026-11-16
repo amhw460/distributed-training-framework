@@ -3,7 +3,7 @@ import torch.distributed as dist
 
 
 def rotate(*tensors, group=None):
-  # send k/v to the next rank in the ring
+  # Move K/V (and during backward, their gradients) to the next rank.
   rank, total_nodes = dist.get_rank(group=group), dist.get_world_size(group=group)
   if total_nodes == 1: return tensors
 
@@ -30,7 +30,7 @@ class RingAttention(torch.autograd.Function):
     scale = q.shape[-1] ** -0.5
     query = q.float()
 
-    # accumulate attention using online softmax across the ring
+    # Online softmax: running max, denominator, and weighted values.
     maximum = torch.full(q.shape[:-1], -float("inf"), device=q.device)
     denominator = torch.zeros_like(maximum)
     numerator = torch.zeros_like(query)
@@ -90,7 +90,8 @@ class RingAttention(torch.autograd.Function):
         dk += ds.transpose(-2, -1) @ query * scale
         dv += probabilities.transpose(-2, -1) @ gradient
 
-      # rotate gradients along with k/v so each owner gets its full gradient
+      # The gradients travel with their K/V block, accumulating contributions
+      # from every querying rank. The last rotation returns them to their owner.
       if total_nodes > 1:
         currentk, currentv, dk, dv = rotate(currentk, currentv, dk, dv, group=group)
 

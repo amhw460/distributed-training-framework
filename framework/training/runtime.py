@@ -1,4 +1,4 @@
-"""Optimizer and learning rate scheduler setup for hybrid training."""
+# Optimizer and learning rate scheduler setup for hybrid training.
 
 from dataclasses import dataclass
 
@@ -29,19 +29,11 @@ def build_optimizer(
         raise ValueError("SGD momentum must be in [0, 1)")
 
     if name == "adamw":
-        return torch.optim.AdamW(
-            parameters, lr=lr, betas=(beta1, beta2),
-            eps=eps, weight_decay=weight_decay,
-        )
+        return torch.optim.AdamW(parameters, lr=lr, betas=(beta1, beta2), eps=eps, weight_decay=weight_decay)
     if name == "adam":
-        return torch.optim.Adam(
-            parameters, lr=lr, betas=(beta1, beta2),
-            eps=eps, weight_decay=weight_decay,
-        )
+        return torch.optim.Adam(parameters, lr=lr, betas=(beta1, beta2), eps=eps, weight_decay=weight_decay)
     if name == "sgd":
-        return torch.optim.SGD(
-            parameters, lr=lr, momentum=momentum, weight_decay=weight_decay,
-        )
+        return torch.optim.SGD(parameters, lr=lr, momentum=momentum, weight_decay=weight_decay)
     raise ValueError(f"Unsupported optimizer: {name}")
 
 
@@ -60,8 +52,5 @@ def build_hybrid_scheduler(
     if not 0 <= min_lr_factor <= 1:
         raise ValueError("min_lr_factor must be in [0, 1]")
 
-    config = ScheduleConfig(
-        steps=steps, warmup_steps=warmup_steps, decay_ratio=decay_ratio,
-        decay_type=name, min_lr=min_lr_factor,
-    )
+    config = ScheduleConfig(steps=steps, warmup_steps=warmup_steps, decay_ratio=decay_ratio, decay_type=name, min_lr=min_lr_factor)
     return build_lr_scheduler(optimizer, config)

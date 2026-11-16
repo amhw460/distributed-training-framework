@@ -1,9 +1,7 @@
-"""Test global gradient clipping for replicated and sharded parameters.
-
-Run:
-    torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \\
-        --master-addr=127.0.0.1 --master-port=29503 -m tests.test_hybrid_clipping
-"""
+# Test global gradient clipping for replicated and sharded parameters.
+# Run:
+# torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \\
+# --master-addr=127.0.0.1 --master-port=29503 -m tests.test_hybrid_clipping
 
 import torch
 import torch.distributed as dist
@@ -36,10 +34,7 @@ def test_clipping():
     result = clip_hybrid_grad_norm_(model, max_norm=2.0)
     assert abs(result - original_norm) < 1e-6
     scale = 2.0 / (original_norm + 1e-6)
-    torch.testing.assert_close(
-        model.replicated.weight.grad,
-        torch.tensor([[3.0, 4.0], [0.0, 0.0]]) * scale,
-    )
+    torch.testing.assert_close(model.replicated.weight.grad, torch.tensor([[3.0, 4.0], [0.0, 0.0]]) * scale)
     expected_shard = (
         torch.tensor([1.0, 2.0, 2.0]) if rank == 0
         else torch.tensor([2.0, 0.0, 0.0])

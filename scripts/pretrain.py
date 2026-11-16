@@ -1,11 +1,8 @@
-"""Run standalone ddp, fsdp, ep, or cp training for Qwen3-MoE.
-
-Examples (CPU/Gloo):
-    torchrun --standalone --nproc-per-node=2 -m scripts.pretrain --synthetic --parallelism fsdp
-    torchrun --standalone --nproc-per-node=3 -m scripts.pretrain --synthetic --parallelism ddp --global-batch-size 6
-
-Without --synthetic, stream FineWeb using the Qwen3 tokenizer.
-"""
+# Configurable DDP or FSDP training for Qwen3-MoE.
+# Examples (CPU/Gloo):
+# torchrun --standalone --nproc-per-node=2 -m scripts.pretrain --synthetic --parallelism fsdp
+# torchrun --standalone --nproc-per-node=3 -m scripts.pretrain --synthetic --parallelism ddp --global-batch-size 6
+# Without --synthetic, stream FineWeb using the Qwen3 tokenizer.
 import argparse
 
 import torch
@@ -25,10 +22,7 @@ from framework.training.trainer import Trainer
 def synthetic_batches(config, rank, vocab_size):
     gen = torch.Generator().manual_seed(config.seed + 1000 * rank)
     while True:
-        yield torch.randint(
-            vocab_size, (config.local_batch_size, config.seqlen + 1),
-            generator=gen, dtype=torch.long,
-        )
+        yield torch.randint(vocab_size, (config.local_batch_size, config.seqlen + 1), generator=gen, dtype=torch.long)
 
 
 def cp_batches(source, rank, config):
@@ -85,19 +79,7 @@ def main():
         if options.synthetic and options.vocab_size < 2:
             raise ValueError("vocab_size must be at least 2")
 
-        config = TrainingConfig(
-            steps=options.steps,
-            localbatchsize=options.local_batch_size,
-            globalbatchsize=options.global_batch_size,
-            seqlen=options.seq_len,
-            learningrate=options.lr,
-            maxnorm=options.max_norm,
-            seed=42,
-            warmupsteps=1,
-            decayratio=0.5,
-            decaytype="cosine",
-            min_lr=0.1,
-        )
+        config = TrainingConfig(steps=options.steps, localbatchsize=options.local_batch_size, globalbatchsize=options.global_batch_size, seqlen=options.seq_len, learningrate=options.lr, maxnorm=options.max_norm, seed=42, warmupsteps=1, decayratio=0.5, decaytype="cosine", min_lr=0.1)
         torch.manual_seed(config.seed)
 
         source = None
@@ -110,27 +92,9 @@ def main():
             tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
             vocab_size = len(tokenizer)
             if options.parallelism != "cp" or rank == 0:
-                source = DataLoader(
-                    build_fineweb_dataset(tokenizer, config.seqlen,
-                                          0 if options.parallelism == "cp" else rank,
-                                          1 if options.parallelism == "cp" else world_size),
-                    batch_size=config.local_batch_size,
-                    drop_last=True,
-                    num_workers=0,
-                )
+                source = DataLoader(build_fineweb_dataset(tokenizer, config.seqlen, 0 if options.parallelism == "cp" else rank, 1 if options.parallelism == "cp" else world_size), batch_size=config.local_batch_size, drop_last=True, num_workers=0)
 
-        args = Qwen3ModelArgs(
-            vocab_size=vocab_size,
-            max_seq_len=config.seqlen,
-            dim=options.dim,
-            moe_inter_dim=options.moe_inter_dim,
-            numlayers=options.num_layers,
-            numheads=options.num_heads,
-            numkvheads=options.num_kv_heads,
-            head_dim=options.head_dim,
-            experts=options.experts,
-            k=options.top_k,
-        )
+        args = Qwen3ModelArgs(vocab_size=vocab_size, max_seq_len=config.seqlen, dim=options.dim, moe_inter_dim=options.moe_inter_dim, numlayers=options.num_layers, numheads=options.num_heads, numkvheads=options.num_kv_heads, head_dim=options.head_dim, experts=options.experts, k=options.top_k)
         model = Qwen3Model(args).to(device)
         synchronize_model(model)
         if options.parallelism == "fsdp":

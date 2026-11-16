@@ -16,7 +16,9 @@ class PipelineStage(nn.Module):
     self.rank = rank
     self.total_nodes = total_nodes
 
-    # each rank owns consecutive transformer layers
+    # each rank does its assigned layers unless its 0 / last rank otherwise it does like the embeddings / output head 
+
+    # split up layers
     q, r = divmod(nlayers, total_nodes)
     start = rank * q + min(rank, r)
     count = q + (rank < r)
@@ -48,7 +50,7 @@ class PipelineStage(nn.Module):
 
     return tensor
 
-# process one microbatch on this pipeline stage
+# Each call processes exactly one microbatch on this stage.
 def forward_microbatch(stage, x, rank, total_nodes, batch_size, seq_len, dim, device, dtype=torch.float32, group=None):
     if rank > 0:
         x = torch.empty((batch_size, seq_len, dim), device=device, dtype=dtype)
@@ -74,7 +76,7 @@ def backward_microbatch(x, output, rank, total_nodes, loss=None, group=None):
 
 
 def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, dim, device, max_norm=None, group=None):
-    # rank 0 sends the tokens, other ranks get activations from the previous stage
+    # Rank 0 supplies the batch; all ranks need microbatch sizes, last rank needs labels.
     if rank == 0:
         tokens = tokens.to(device=device, dtype=torch.long).contiguous()
         shape = torch.tensor(tokens.shape, dtype=torch.long, device=device)
@@ -96,7 +98,7 @@ def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, di
     dtype = next(stage.parameters()).dtype
     total_tokens = batch_size * (seq_len - 1)
 
-    # gpipe runs all forwards before backwards in reverse order
+    # GPipe: all forwards, then all backwards in reverse order.
     for mb in microbatches:
         x, output = forward_microbatch(stage, mb[:, :-1] if rank == 0 else None,
                                        rank, total_nodes, mb.size(0), seq_len - 1, dim, device, dtype, group=group)

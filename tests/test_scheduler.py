@@ -6,19 +6,7 @@ from framework.training.config import TrainingConfig
 from framework.training.lr_scheduler import build_lr_scheduler
 
 for decay_type in ["linear", "sqrt", "cosine"]:
-    config = TrainingConfig(
-        steps=20,
-        localbatchsize=2,
-        globalbatchsize=8,
-        seqlen=8,
-        learningrate=0.001,
-        maxnorm=1.0,
-        seed=42,
-        warmupsteps=4,
-        decayratio=0.5,
-        decaytype=decay_type,
-        min_lr=0.1,
-    )
+    config = TrainingConfig(steps=20, localbatchsize=2, globalbatchsize=8, seqlen=8, learningrate=0.001, maxnorm=1.0, seed=42, warmupsteps=4, decayratio=0.5, decaytype=decay_type, min_lr=0.1)
 
     parameter = torch.nn.Parameter(torch.tensor(1.0))
     optimizer = torch.optim.AdamW([parameter], lr=0.001)

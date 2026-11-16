@@ -1,4 +1,4 @@
-"""Run the existing assertion-based checks: python -m tests."""
+# Run the existing assertion-based checks: python -m tests.
 import runpy
 
 

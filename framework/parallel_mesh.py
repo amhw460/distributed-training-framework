@@ -1,4 +1,4 @@
-"""Set up ranks and communication groups for every parallelism dimension."""
+# Set up ranks and communication groups for every parallelism dimension.
 
 from itertools import product
 from math import prod
@@ -37,9 +37,7 @@ class ParallelMesh:
         # every rank has to create these groups in the same order
         for dimension in self.DIMENSIONS:
             other_dimensions = [name for name in self.DIMENSIONS if name != dimension]
-            for other_coordinates in product(
-                *(range(self.sizes[name]) for name in other_dimensions)
-            ):
+            for other_coordinates in product(*(range(self.sizes[name]) for name in other_dimensions)):
                 coordinates = dict(zip(other_dimensions, other_coordinates))
                 ranks = []
                 for local_rank in range(self.sizes[dimension]):

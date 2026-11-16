@@ -1,11 +1,8 @@
-"""Verify a manually sharded linear layer against ordinary dense training.
-
-Run from the repository root:
-    torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \
-        --master-addr=127.0.0.1 --master-port=29502 -m tests.test_fsdp
-
-No GPU, FineWeb download, or pretraining runner is required.
-"""
+# Verify a manually sharded linear layer against ordinary dense training.
+# Run from the repository root:
+# torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \
+# --master-addr=127.0.0.1 --master-port=29502 -m tests.test_fsdp
+# No GPU, FineWeb download, or pretraining runner is required.
 
 import math
 
@@ -54,10 +51,7 @@ def test_sharded_linear(rank, world_size):
     with torch.no_grad():
         reference.weight.copy_(initial_weight)
 
-    reference_loss = F.mse_loss(
-        reference(torch.cat(all_x, dim=0)),
-        torch.cat(all_target, dim=0),
-    )
+    reference_loss = F.mse_loss(reference(torch.cat(all_x, dim=0)), torch.cat(all_target, dim=0))
     reference_loss.backward()
 
     # Each rank computes its own local loss; the custom autograd backward
@@ -67,37 +61,19 @@ def test_sharded_linear(rank, world_size):
 
     total_elements = reference.weight.numel()
     padded_elements = shard_size * world_size - total_elements
-    expected_full_gradient = F.pad(
-        reference.weight.grad.reshape(-1), (0, padded_elements)
-    )
+    expected_full_gradient = F.pad(reference.weight.grad.reshape(-1), (0, padded_elements))
     expected_shard_gradient = expected_full_gradient.chunk(world_size)[rank]
-    torch.testing.assert_close(
-        sharded.weightshard.grad,
-        expected_shard_gradient,
-        rtol=1e-5,
-        atol=1e-6,
-    )
+    torch.testing.assert_close(sharded.weightshard.grad, expected_shard_gradient, rtol=1e-5, atol=1e-6)
 
     # Update sharded and dense weights with identical AdamW settings.
     # After gathering updated weight shards, both results should agree.
-    local_optimizer = torch.optim.AdamW(
-        sharded.parameters(), lr=0.01, weight_decay=0.0
-    )
-    reference_optimizer = torch.optim.AdamW(
-        reference.parameters(), lr=0.01, weight_decay=0.0
-    )
+    local_optimizer = torch.optim.AdamW(sharded.parameters(), lr=0.01, weight_decay=0.0)
+    reference_optimizer = torch.optim.AdamW(reference.parameters(), lr=0.01, weight_decay=0.0)
     local_optimizer.step()
     reference_optimizer.step()
 
-    reconstructed_weight = gather_params(
-        sharded.weightshard.detach(), sharded.shape, sharded.numel
-    )
-    torch.testing.assert_close(
-        reconstructed_weight,
-        reference.weight.detach(),
-        rtol=1e-5,
-        atol=1e-6,
-    )
+    reconstructed_weight = gather_params(sharded.weightshard.detach(), sharded.shape, sharded.numel)
+    torch.testing.assert_close(reconstructed_weight, reference.weight.detach(), rtol=1e-5, atol=1e-6)
 
 
 def main():
@@ -107,11 +83,7 @@ def main():
         assert world_size == 2, "Launch this test with two ranks"
         test_sharded_linear(rank, world_size)
         if rank == 0:
-            print(
-                "PASS: ShardedLinear forward, backward, and AdamW updates "
-                "match dense global-batch training",
-                flush=True,
-            )
+            print("PASS: ShardedLinear forward, backward, and AdamW updates " "match dense global-batch training", flush=True)
     finally:
         dist.destroy_process_group()
 

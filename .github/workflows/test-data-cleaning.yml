@@ -1,0 +1,21 @@
+name: Data cleaning correctness
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "framework/data/cleaning.py"
+      - "tests/test_cleaning.py"
+      - ".github/workflows/test-data-cleaning.yml"
+  workflow_dispatch:
+
+jobs:
+  cleaning:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test normalization, filtering, deduplication, and stats
+        run: python -m unittest tests.test_cleaning -v

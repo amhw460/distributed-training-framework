@@ -3,7 +3,13 @@ from torch import nn
 import torch.distributed as dist
 import os
 
-# tp splits weight matrices across ranks and syncs the partial results
+# tensor parallelism splits a layers output, this implementation is doing it togehter
+# so like if u have a -> b in terms of layers u split a in terms of the output (column) and b in terms of the input (row)
+# as to efficiently paralellize work
+
+
+# wrapper class exists to add the gradient contributions from ranks and make sure that u have
+# correct gradient
 
 class CopyToTensorParallelRegion(torch.autograd.Function):
   @staticmethod
@@ -20,7 +26,8 @@ class CopyToTensorParallelRegion(torch.autograd.Function):
 
 class ColumnwiseLinearParallelism(nn.Module):
 
-  # each rank owns a slice of the output features
+  # tensor parallelism except by column (splitting across output features), just wrap a linear layer 
+  # and get the chunks that you are accounting for
 
   def __init__(self, linear: nn.Linear, group=None):
     super().__init__()
@@ -47,7 +54,7 @@ class ColumnwiseLinearParallelism(nn.Module):
     x = CopyToTensorParallelRegion.apply(x, self.group)
     return nn.functional.linear(x, self.weight, bias=None)
 
-# rowwise tp sums partial outputs after the matmul
+# ditto but for row wise split
 class ReduceFromTensorParallelRegion(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, group):
@@ -62,7 +69,8 @@ class ReduceFromTensorParallelRegion(torch.autograd.Function):
 
 class RowwiseLinearParallelism(nn.Module):
 
-  # each rank owns a slice of the input features
+  # tensor parallelism except by column (splitting across output features), just wrap a linear layer 
+  # and get the chunks that you are accounting for
 
   def __init__(self, linear: nn.Linear, group=None):
     super().__init__()
@@ -89,7 +97,8 @@ class RowwiseLinearParallelism(nn.Module):
     output = nn.functional.linear(x, self.weight, bias=None)
     return ReduceFromTensorParallelRegion.apply(output, self.group)
 
-# split q/k/v by output heads and the attention output projection by input heads
+#qkv is largely independent computation, output projection maps attention back to wahtever dim,
+# so if ur attention is split amongst outputs logically ur gonna split ur output amongst inputs
 
 def parallelize_attn(attention, group=None):
   world_size = dist.get_world_size(group=group)
@@ -124,8 +133,8 @@ def paralellize_model(model, group=None):
   return model
 
 
+# Sum contributions to Q/K RMSNorm weights shared by different TP heads.
 def synchronize_tp_head_norm_gradients(model, group=None):
-  """Sum gradients for q/k norms shared across tp ranks."""
   for layer in model.transformerlayers:
     attention = layer.attention
     for norm in (attention.rmsNormQ, attention.rmsNormK):

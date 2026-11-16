@@ -1,12 +1,10 @@
-"""Small, deterministic text cleaning helpers for training datasets."""
-
 import hashlib
 import re
 from collections import Counter
 
 
+# normalize whitespace while keeping paragraph breaks
 def normalize_text(text: str) -> str:
-    """Normalize whitespace while keeping paragraph breaks."""
     if not isinstance(text, str):
         raise TypeError("Document text must be a string")
 
@@ -15,8 +13,8 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
+# normalize and check the document, return the cleaned text or a rejection reason
 def clean_document(text: str, min_words: int = 50) -> tuple[str | None, str | None]:
-    """Return (cleaned text, None) or (None, rejection reason)."""
     if not isinstance(min_words, int) or isinstance(min_words, bool) or min_words < 0:
         raise ValueError("min_words must be a nonnegative integer")
 
@@ -28,10 +26,10 @@ def clean_document(text: str, min_words: int = 50) -> tuple[str | None, str | No
 
     return cleaned, None
 
-
+# keep track of duplicate documents and why we reject them
 class DocumentCleaner:
-    """Filter documents, reject exact duplicates, and count outcomes."""
 
+    # initialize the cleaner and its counters
     def __init__(self, min_words: int = 50):
         if not isinstance(min_words, int) or isinstance(min_words, bool) or min_words < 0:
             raise ValueError("min_words must be a nonnegative integer")
@@ -40,6 +38,7 @@ class DocumentCleaner:
         self.seen_hashes = set()
         self.counts = Counter()
 
+    # clean one document and check if we have already seen it
     def clean(self, text: str) -> tuple[str | None, str | None]:
         cleaned, reason = clean_document(text, self.min_words)
         self.counts["processed"] += 1
@@ -58,8 +57,8 @@ class DocumentCleaner:
         self.counts["kept"] += 1
         return cleaned, None
 
+    # get the counts for each cleaning result
     def stats(self) -> dict[str, int]:
-        """Counts can be saved directly to the preparation report."""
         return {
             "processed": self.counts["processed"],
             "kept": self.counts["kept"],

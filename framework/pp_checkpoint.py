@@ -1,4 +1,4 @@
-"""Per-rank pipeline checkpoints. Requires the same rank count and model partition on resume."""
+# Per-rank pipeline checkpoints. Requires the same rank count and model partition on resume.
 from pathlib import Path
 
 import torch

@@ -1,4 +1,4 @@
-"""Check rank coordinates and collectives within each mesh group."""
+# Check rank coordinates and collectives within each mesh group.
 
 import argparse
 from itertools import product

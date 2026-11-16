@@ -4,18 +4,18 @@ from torch import nn
 import torch.distributed as dist
 import math
 
-# fsdp: each rank owns part of the model weights
+# FSDP (fully sharded data paralellism)
 
 class GatherShardedWeight(torch.autograd.Function): 
-  # all-gather weights in forward, reduce-scatter their gradients in backward
+  # pytorch autograd doesnt know how to backprop through dist.allgather, so we write a wrapper class
   @staticmethod
   def forward(ctx, shard, shape, numel, group):
       ctx.group = group
-      return gather_params(shard, shape, numel, group=group)
+      return gather_params(shard, shape, numel, group=group) #reconstructs the weights
 
   @staticmethod
   def backward(ctx, grad_output):
-      grad_shard = reduce_scatter_gradients(grad_output, group=ctx.group)
+      grad_shard = reduce_scatter_gradients(grad_output, group=ctx.group) # gets gradient, then reduce scatters so all ranks have their own gradients
 
       return grad_shard, None, None, None
 
@@ -37,7 +37,7 @@ class ShardedLinear(nn.Module):
   def forward(self, x):
     weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel, self.group)
 
-    # use the gathered weight for this forward pass
+    # x * W + b, except no b
     output = nn.functional.linear(input=x, weight=weights, bias = None)
 
     return output
@@ -96,10 +96,10 @@ class ShardedExperts(nn.Module):
 
           flattened_weights.append(weight.detach().reshape(-1))
 
-    # concatenate the expert weights before sharding
+        # Combine every expert's weights into one tensor
     combined_weights = torch.cat(flattened_weights)
 
-    # each rank keeps its own shard
+        # Each rank permanently owns only its shard
     shard, shape, numel = parameter_sharding(combined_weights, group=group)
 
     self.weightshard = nn.Parameter(shard)
@@ -122,20 +122,20 @@ class ShardedExperts(nn.Module):
 
       if tokenindices.numel() == 0: continue
 
-      # up, gate, and down matrices for this expert
+        # Three matrices per expert, in constructor order
       up_weight = matrices[3 * expert_idx]
       gate_weight = matrices[3 * expert_idx + 1]
       down_weight = matrices[3 * expert_idx + 2]
 
       tokens = tokenstates[tokenindices]
 
-      # swiglu expert computation
+        # SwiGLU expert computation
       up = nn.functional.linear(tokens, up_weight)
       gate = nn.functional.silu(nn.functional.linear(tokens, gate_weight))
 
       expert_output = nn.functional.linear(up * gate, down_weight)
 
-      # weight the output by the router probability
+        # Apply router weights
       router_weights = topkweights[tokenindices, whichoftopk].unsqueeze(-1)
 
       output = output.index_add(0, tokenindices, router_weights * expert_output)
@@ -231,8 +231,8 @@ def shard_model(model, group=None):
   return model
 
 
+# FSDP-shard the *local TP weight*, preserving the original TP collectives.
 class ShardedTensorParallelLinear(nn.Module):
-  """FSDP-shard the *local TP weight*, preserving the original TP collectives."""
   def __init__(self, layer, group=None):
     from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
     super().__init__()
@@ -257,13 +257,11 @@ class ShardedTensorParallelLinear(nn.Module):
     return ReduceFromTensorParallelRegion.apply(output, self.tp_group)
 
 
+# Shard every local leaf parameter after PP/EP/TP partitioning.
+# This is intentionally simple: each existing linear/embedding/norm is
+# reconstructed for its forward call and reduce-scattered in backward.
+# No custom flattening, optimizer state partitioning, or overlap.
 def shard_local_modules(module, group=None):
-  """Shard every local leaf parameter after PP/EP/TP partitioning.
-
-  This is intentionally simple: each existing linear/embedding/norm is
-  reconstructed for its forward call and reduce-scattered in backward.
-  No custom flattening, optimizer state partitioning, or overlap.
-  """
   from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
 
   for name, child in list(module.named_children()):
@@ -280,7 +278,8 @@ def shard_local_modules(module, group=None):
       continue
     setattr(module, name, replacement)
 
-  # every rank must enter fsdp collectives, even for unused experts
+  # Expert loops must enter all FSDP collectives in the same order,
+  # including experts receiving no tokens on one data-parallel rank.
   if module.__class__.__name__ in ("MoE", "ExpertParallel"):
     module.fsdp_mode = True
   return module

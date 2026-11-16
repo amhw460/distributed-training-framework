@@ -86,3 +86,17 @@ integration, automatic mixed precision in the hybrid trainer, or a
 reshardable/world-size-independent checkpoint format. The model is fully
 initialized before stage and parameter partitioning, which may temporarily
 require much more memory than a production large-model implementation.
+
+## Preparing a FineWeb sample
+
+Install the data dependencies with `pip install datasets pyarrow`. The preparation script streams documents, normalizes and filters them, removes exact duplicates, and saves cleaned text in compressed Parquet shards. It does not create a train/test split or tokenize the text.
+
+```sh
+# Try 100 documents first.
+python -m scripts.prepare_data --max-documents 100 --output-dir data/fineweb-smoke
+
+# Prepare 100,000 documents (default size), writing up to 10,000 kept documents per shard.
+python -m scripts.prepare_data --max-documents 100000 --output-dir data/fineweb-100k
+```
+
+The output contains `part-00000.parquet`, `part-00001.parquet`, etc., plus `manifest.json`. The manifest records source, seed, cleaning options, document counts and rejection reasons. The output directory must be new so existing datasets are never overwritten. Generated datasets under `data/` are ignored by Git.

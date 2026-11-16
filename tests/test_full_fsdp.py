@@ -1,11 +1,8 @@
-"""Full Qwen3-MoE FSDP versus replicated DDP correctness test.
-
-Run from repository root:
-    torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \\
-        --master-addr=127.0.0.1 --master-port=29506 -m tests.test_full_fsdp
-
-No FineWeb data or GPU needed.
-"""
+# Full Qwen3-MoE FSDP versus replicated DDP correctness test.
+# Run from repository root:
+# torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \\
+# --master-addr=127.0.0.1 --master-port=29506 -m tests.test_full_fsdp
+# No FineWeb data or GPU needed.
 
 import copy
 import math
@@ -27,8 +24,8 @@ from framework.models.model_args import Qwen3ModelArgs
 SHARDED_TYPES = (ShardedLinear, ShardedEmbedding, ShardedRMSNorm, ShardedExperts)
 
 
+# Rebuild all parameters in the same order/names as the dense Qwen model.
 def materialize_sharded(sharded):
-    """Rebuild all parameters in the same order/names as the dense Qwen model."""
     result = {}
     for module_name, module in sharded.named_modules():
         if not isinstance(module, SHARDED_TYPES):
@@ -39,9 +36,7 @@ def materialize_sharded(sharded):
             for i in range(module.num_experts):
                 for j, proj in enumerate(("up_proj", "gate", "down_proj")):
                     idx = 3 * i + j
-                    result[f"{module_name}.{i}.{proj}.weight"] = matrices[idx].reshape(
-                        module.weight_shapes[idx]
-                    )
+                    result[f"{module_name}.{i}.{proj}.weight"] = matrices[idx].reshape(module.weight_shapes[idx])
         else:
             result[f"{module_name}.weight"] = recovered
     return result
@@ -55,10 +50,7 @@ def assert_sharded_weights_equal(dense, sharded):
         f"missing={set(expected)-set(actual)}, extra={set(actual)-set(expected)}"
     )
     for name, parameter in expected.items():
-        torch.testing.assert_close(
-            actual[name], parameter.detach(), rtol=2e-4, atol=2e-6,
-            msg=f"Weight mismatch: {name}",
-        )
+        torch.testing.assert_close(actual[name], parameter.detach(), rtol=2e-4, atol=2e-6, msg=f"Weight mismatch: {name}")
 
 
 def assert_sharded_grads_equal(dense, sharded, rank, world_size):
@@ -83,18 +75,11 @@ def assert_sharded_grads_equal(dense, sharded, rank, world_size):
         shard_size = math.ceil(full_grad.numel() / world_size)
         padded = F.pad(full_grad, (0, shard_size * world_size - full_grad.numel()))
         expected = padded[rank * shard_size:(rank + 1) * shard_size]
-        torch.testing.assert_close(
-            local_grad, expected, rtol=2e-4, atol=2e-6,
-            msg=f"Shard gradient mismatch: {module_name}",
-        )
+        torch.testing.assert_close(local_grad, expected, rtol=2e-4, atol=2e-6, msg=f"Shard gradient mismatch: {module_name}")
 
 
 def test_full_fsdp(rank, world_size):
-    args = Qwen3ModelArgs(
-        vocab_size=37, max_seq_len=6, dim=8, moe_inter_dim=12,
-        numlayers=2, numheads=2, numkvheads=1, head_dim=4,
-        experts=4, k=2,
-    )
+    args = Qwen3ModelArgs(vocab_size=37, max_seq_len=6, dim=8, moe_inter_dim=12, numlayers=2, numheads=2, numkvheads=1, head_dim=4, experts=4, k=2)
 
     torch.manual_seed(12345 + rank)
     dense = Qwen3Model(args)
@@ -116,17 +101,12 @@ def test_full_fsdp(rank, world_size):
         opt_dense.zero_grad()
         opt_sharded.zero_grad()
         for micro in range(2):
-            generator = torch.Generator().manual_seed(
-                8000 + 1000 * rank + 10 * step + micro
-            )
+            generator = torch.Generator().manual_seed(8000 + 1000 * rank + 10 * step + micro)
             tokens = torch.randint(0, args.vocab_size, (2, 6), generator=generator)
             inputs, labels = tokens[:, :-1], tokens[:, 1:]
             dense_logits = dense(inputs)
             sharded_logits = sharded(inputs)
-            torch.testing.assert_close(
-                sharded_logits, dense_logits, rtol=2e-4, atol=2e-6,
-                msg=f"Logits differ: step={step}, microbatch={micro}",
-            )
+            torch.testing.assert_close(sharded_logits, dense_logits, rtol=2e-4, atol=2e-6, msg=f"Logits differ: step={step}, microbatch={micro}")
             dense_loss = F.cross_entropy(
                 dense_logits.reshape(-1, args.vocab_size), labels.reshape(-1)
             ) / 2
@@ -142,10 +122,7 @@ def test_full_fsdp(rank, world_size):
 
         reference_norm = clip_hybrid_grad_norm_(dense, max_norm=0.1)
         actual_norm = clip_hybrid_grad_norm_(sharded, max_norm=0.1)
-        torch.testing.assert_close(
-            torch.tensor(actual_norm), torch.tensor(reference_norm),
-            rtol=2e-4, atol=2e-6, msg=f"Global clipping norm mismatch step={step}",
-        )
+        torch.testing.assert_close(torch.tensor(actual_norm), torch.tensor(reference_norm), rtol=2e-4, atol=2e-6, msg=f"Global clipping norm mismatch step={step}")
         assert_sharded_grads_equal(dense, sharded, rank, world_size)
         opt_dense.step()
         opt_sharded.step()
@@ -160,11 +137,7 @@ def main():
         assert world_size == 2, "Use exactly two ranks"
         test_full_fsdp(rank, world_size)
         if rank == 0:
-            print(
-                "PASS: full-model FSDP matches DDP on all weights, "
-                "forward outputs, backward gradients, clipping, and AdamW updates",
-                flush=True,
-            )
+            print("PASS: full-model FSDP matches DDP on all weights, " "forward outputs, backward gradients, clipping, and AdamW updates", flush=True)
     finally:
         dist.destroy_process_group()
 

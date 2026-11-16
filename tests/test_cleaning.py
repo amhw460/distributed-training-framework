@@ -1,4 +1,4 @@
-"""Run with: python -m unittest tests.test_cleaning"""
+# run with: python -m unittest tests.test_cleaning
 
 import unittest
 

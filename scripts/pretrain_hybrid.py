@@ -1,4 +1,4 @@
-"""Train Qwen3 MoE with any of the supported mesh parallelism dimensions."""
+# Train Qwen3 MoE with any of the supported mesh parallelism dimensions.
 
 import argparse
 import json
@@ -91,9 +91,7 @@ def main():
             device = torch.device("cpu")
             torch.set_num_threads(1)
 
-        mesh = ParallelMesh(
-            **{axis: getattr(cfg, axis) for axis in ParallelMesh.DIMENSIONS}
-        )
+        mesh = ParallelMesh(**{axis: getattr(cfg, axis) for axis in ParallelMesh.DIMENSIONS})
         group, leader = create_batch_group(mesh)
         num_replicas = data_replica_count(mesh)
         nominal_global = cfg.local_batch_size * num_replicas
@@ -114,27 +112,14 @@ def main():
             tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
             vocab_size = len(tokenizer)
 
-        args = Qwen3ModelArgs(
-            vocab_size=vocab_size, max_seq_len=cfg.seq_len, dim=cfg.dim,
-            moe_inter_dim=cfg.moe_inter_dim, numlayers=cfg.num_layers,
-            numheads=cfg.num_heads, numkvheads=cfg.num_kv_heads,
-            head_dim=cfg.head_dim, experts=cfg.experts, k=cfg.top_k,
-        )
+        args = Qwen3ModelArgs(vocab_size=vocab_size, max_seq_len=cfg.seq_len, dim=cfg.dim, moe_inter_dim=cfg.moe_inter_dim, numlayers=cfg.num_layers, numheads=cfg.num_heads, numkvheads=cfg.num_kv_heads, head_dim=cfg.head_dim, experts=cfg.experts, k=cfg.top_k)
         dense = Qwen3Model(args).to(device)
         # start from the same weights on every rank before we shard the model
         composed = compose_model(dense, mesh, cfg.seq_len)
         model = composed.model
         del dense
-        optimizer = build_optimizer(
-            model.parameters(), name=cfg.optimizer, lr=cfg.lr,
-            weight_decay=cfg.weight_decay, beta1=cfg.beta1, beta2=cfg.beta2,
-            eps=cfg.eps, momentum=cfg.momentum,
-        )
-        scheduler = build_hybrid_scheduler(
-            optimizer, name=cfg.scheduler, steps=cfg.steps,
-            warmup_steps=cfg.warmup_steps, decay_ratio=cfg.decay_ratio,
-            min_lr_factor=cfg.min_lr_factor,
-        )
+        optimizer = build_optimizer(model.parameters(), name=cfg.optimizer, lr=cfg.lr, weight_decay=cfg.weight_decay, beta1=cfg.beta1, beta2=cfg.beta2, eps=cfg.eps, momentum=cfg.momentum)
+        scheduler = build_hybrid_scheduler(optimizer, name=cfg.scheduler, steps=cfg.steps, warmup_steps=cfg.warmup_steps, decay_ratio=cfg.decay_ratio, min_lr_factor=cfg.min_lr_factor)
         resume_config = {
             "optimizer": cfg.optimizer, "lr": cfg.lr, "weight_decay": cfg.weight_decay,
             "beta1": cfg.beta1, "beta2": cfg.beta2, "eps": cfg.eps, "momentum": cfg.momentum,
@@ -158,10 +143,7 @@ def main():
             from framework.data.dataset import build_fineweb_dataset
             dataset = build_fineweb_dataset(tokenizer, cfg.seq_len, replica_index(mesh), num_replicas)
             dataset.samples_seen = trainer.step * accumulation * cfg.local_batch_size
-            source = iter(DataLoader(
-                dataset, batch_size=cfg.local_batch_size,
-                drop_last=True, num_workers=0,
-            ))
+            source = iter(DataLoader(dataset, batch_size=cfg.local_batch_size, drop_last=True, num_workers=0))
 
         if mesh.global_rank == 0:
             print(composed.plan.describe(), flush=True)
@@ -175,41 +157,22 @@ def main():
                     if cfg.synthetic:
                         seed = cfg.seed + 100000 * replica_index(mesh) + 1000 * step + micro
                         generator = torch.Generator().manual_seed(seed)
-                        batch = torch.randint(
-                            0, vocab_size, (cfg.local_batch_size, cfg.seq_len + 1),
-                            generator=generator, dtype=torch.long, device="cpu",
-                        ).to(device)
+                        batch = torch.randint(0, vocab_size, (cfg.local_batch_size, cfg.seq_len + 1), generator=generator, dtype=torch.long, device="cpu").to(device)
                     else:
                         batch = next(source).to(device)
-                batch = broadcast_replica_batch(
-                    batch, mesh, group, leader,
-                    (cfg.local_batch_size, cfg.seq_len + 1), device,
-                )
+                batch = broadcast_replica_batch(batch, mesh, group, leader, (cfg.local_batch_size, cfg.seq_len + 1), device)
                 batches.append(batch)
 
             loss, norm = trainer.training_step(batches)
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             # this includes loading and broadcasting data, not just the training step
-            elapsed = torch.tensor(
-                time.perf_counter() - step_started,
-                dtype=torch.float64, device=device,
-            )
+            elapsed = torch.tensor(time.perf_counter() - step_started, dtype=torch.float64, device=device)
             dist.all_reduce(elapsed, op=dist.ReduceOp.MAX)
-            trainer.last_metrics["end_to_end_tokens_per_sec"] = (
-                trainer.last_metrics["step_tokens"] / elapsed.item()
-            )
+            trainer.last_metrics["end_to_end_tokens_per_sec"] = trainer.last_metrics["step_tokens"] / elapsed.item()
             if mesh.global_rank == 0:
                 metrics = trainer.last_metrics
-                print(
-                    f"step={metrics['step']} loss={metrics['loss']:.6f} "
-                    f"grad_norm={metrics['grad_norm']:.6f} lr={metrics['lr']:.8g} "
-                    f"tokens_seen={metrics['tokens_seen']} "
-                    f"step_time_s={metrics['step_time_s']:.4f} "
-                    f"tokens_per_sec={metrics['tokens_per_sec']:.2f} "
-                    f"end_to_end_tokens_per_sec={metrics['end_to_end_tokens_per_sec']:.2f}",
-                    flush=True,
-                )
+                print(f"step={metrics['step']} loss={metrics['loss']:.6f} " f"grad_norm={metrics['grad_norm']:.6f} lr={metrics['lr']:.8g} " f"tokens_seen={metrics['tokens_seen']} " f"step_time_s={metrics['step_time_s']:.4f} " f"tokens_per_sec={metrics['tokens_per_sec']:.2f} " f"end_to_end_tokens_per_sec={metrics['end_to_end_tokens_per_sec']:.2f}", flush=True)
                 if cfg.metrics_file is not None:
                     cfg.metrics_file.parent.mkdir(parents=True, exist_ok=True)
                     with cfg.metrics_file.open("a", encoding="utf-8") as stream:

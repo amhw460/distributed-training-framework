@@ -1,13 +1,10 @@
-"""Standalone GPipe trainer on CPU/Gloo.
-
-Example (macOS):
-    GLOO_SOCKET_IFNAME=lo0 torchrun --nnodes=1 --nproc-per-node=2 \
-      --rdzv-backend=static --master-addr=127.0.0.1 --master-port=29534 \
-      -m scripts.pretrain_pp --synthetic --num-layers=4 --steps=2
-
-Each rank owns one pipeline stage. The microbatch batch is shared across ranks;
-the optimizer updates only local stage parameters.
-"""
+# Standalone GPipe trainer on CPU/Gloo.
+# Example (macOS):
+# GLOO_SOCKET_IFNAME=lo0 torchrun --nnodes=1 --nproc-per-node=2 \
+# --rdzv-backend=static --master-addr=127.0.0.1 --master-port=29534 \
+# -m scripts.pretrain_pp --synthetic --num-layers=4 --steps=2
+# Each rank owns one pipeline stage. The microbatch batch is shared across ranks;
+# the optimizer updates only local stage parameters.
 import argparse
 
 import torch
@@ -47,7 +44,7 @@ def main():
     parser.add_argument("--resume", default=None, help="Checkpoint step directory")
     options = parser.parse_args()
 
-    # validate arguments before starting distributed operations
+    # Validate before launching distributed collectives.
     if options.steps < 1: parser.error("--steps must be positive")
     if options.schedule_steps is not None and options.schedule_steps < options.steps:
         parser.error("--schedule-steps must be >= --steps")
@@ -85,30 +82,17 @@ def main():
             tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
             vocab_size = len(tokenizer)
 
-        args = Qwen3ModelArgs(
-            vocab_size=vocab_size, max_seq_len=options.seq_len, dim=options.dim,
-            moe_inter_dim=options.moe_inter_dim, numlayers=options.num_layers,
-            numheads=options.num_heads, numkvheads=options.num_kv_heads,
-            head_dim=options.head_dim, experts=options.experts, k=options.top_k,
-        )
+        args = Qwen3ModelArgs(vocab_size=vocab_size, max_seq_len=options.seq_len, dim=options.dim, moe_inter_dim=options.moe_inter_dim, numlayers=options.num_layers, numheads=options.num_heads, numkvheads=options.num_kv_heads, head_dim=options.head_dim, experts=options.experts, k=options.top_k)
         model = Qwen3Model(args).to(device)
         stage = PipelineStage(model, rank, total_nodes)
         del model
 
         optimizer = torch.optim.AdamW(stage.parameters(), lr=options.lr)
-        config = TrainingConfig(
-            steps=options.schedule_steps or options.steps,
-            localbatchsize=options.batch_size, globalbatchsize=options.batch_size,
-            seqlen=options.seq_len, learningrate=options.lr,
-            maxnorm=options.max_norm, seed=options.seed, warmupsteps=1,
-            decayratio=0.5, decaytype="cosine", min_lr=0.1,
-        )
+        config = TrainingConfig(steps=options.schedule_steps or options.steps, localbatchsize=options.batch_size, globalbatchsize=options.batch_size, seqlen=options.seq_len, learningrate=options.lr, maxnorm=options.max_norm, seed=options.seed, warmupsteps=1, decayratio=0.5, decaytype="cosine", min_lr=0.1)
         scheduler = build_lr_scheduler(optimizer, config)
         start_step = 0
         if options.resume:
-            start_step = load_pp_checkpoint(
-                options.resume, stage, optimizer, scheduler, rank, total_nodes, args
-            )
+            start_step = load_pp_checkpoint(options.resume, stage, optimizer, scheduler, rank, total_nodes, args)
         if start_step > options.steps:
             raise ValueError("Checkpoint step exceeds requested --steps")
 
@@ -116,35 +100,24 @@ def main():
         if rank == 0 and not options.synthetic:
             from framework.data.dataset import build_fineweb_dataset
             dataset = build_fineweb_dataset(tokenizer, options.seq_len, 0, 1)
-            data_iterator = iter(DataLoader(
-                dataset, batch_size=options.batch_size, drop_last=True, num_workers=0,
-            ))
+            data_iterator = iter(DataLoader(dataset, batch_size=options.batch_size, drop_last=True, num_workers=0))
 
         for step in range(start_step, options.steps):
             tokens = None
             if rank == 0:
                 if options.synthetic:
                     generator = torch.Generator().manual_seed(options.seed + step)
-                    tokens = torch.randint(
-                        0, vocab_size, (options.batch_size, options.seq_len + 1),
-                        generator=generator,
-                    )
+                    tokens = torch.randint(0, vocab_size, (options.batch_size, options.seq_len + 1), generator=generator)
                 else:
                     tokens = next(data_iterator)
 
-            loss = gpipe_step(
-                stage, tokens, optimizer, options.microbatches, rank,
-                total_nodes, options.dim, device, max_norm=options.max_norm,
-            )
+            loss = gpipe_step(stage, tokens, optimizer, options.microbatches, rank, total_nodes, options.dim, device, max_norm=options.max_norm)
             scheduler.step()
             if rank == total_nodes - 1:
                 print(f"step={step + 1} loss={loss:.6f} lr={optimizer.param_groups[0]['lr']:.6g}", flush=True)
 
             if options.checkpoint_dir and options.save_every and (step + 1) % options.save_every == 0:
-                save_pp_checkpoint(
-                    options.checkpoint_dir, step + 1, stage,
-                    optimizer, scheduler, rank, total_nodes, args,
-                )
+                save_pp_checkpoint(options.checkpoint_dir, step + 1, stage, optimizer, scheduler, rank, total_nodes, args)
 
         if rank == 0: print("PASS: GPipe training entry point completed", flush=True)
     finally:

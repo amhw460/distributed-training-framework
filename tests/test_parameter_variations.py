@@ -1,11 +1,9 @@
-"""Matrix of small Qwen3 configurations against dense reference training.
-
-Run:
-  torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode tp
-  torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode fsdp
-  torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode ddp
-No GPUs, tokenizer, or network downloads required.
-"""
+# Matrix of small Qwen3 configurations against dense reference training.
+# Run:
+# torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode tp
+# torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode fsdp
+# torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode ddp
+# No GPUs, tokenizer, or network downloads required.
 import argparse
 import copy
 

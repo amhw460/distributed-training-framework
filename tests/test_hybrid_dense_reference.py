@@ -1,4 +1,4 @@
-"""Compare distributed Qwen3 updates against the unsharded model."""
+# Compare distributed Qwen3 updates against the unsharded model.
 import argparse
 import math
 import re

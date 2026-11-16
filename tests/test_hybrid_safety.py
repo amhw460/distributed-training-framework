@@ -1,9 +1,7 @@
-"""Two-rank checks for hybrid DDP gradient synchronization and checkpoint safety.
-
-Run:
-    torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \\
-        --master-addr=127.0.0.1 --master-port=29504 -m tests.test_hybrid_safety
-"""
+# Two-rank checks for hybrid DDP gradient synchronization and checkpoint safety.
+# Run:
+# torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \\
+# --master-addr=127.0.0.1 --master-port=29504 -m tests.test_hybrid_safety
 
 import tempfile
 
@@ -37,9 +35,7 @@ def main():
         model = SmallHybrid()
 
         model.replicated.grad = torch.tensor([2.0 if rank == 0 else 6.0])
-        shard_grad = torch.full_like(
-            model.outputprojection.weightshard, 10.0 if rank == 0 else 20.0
-        )
+        shard_grad = torch.full_like(model.outputprojection.weightshard, 10.0 if rank == 0 else 20.0)
         model.outputprojection.weightshard.grad = shard_grad.clone()
 
         synchronize_gradients(model)

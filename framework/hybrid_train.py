@@ -1,4 +1,4 @@
-"""Train Qwen3 with whatever parallelism dimensions the mesh specifies."""
+# Train Qwen3 with whatever parallelism dimensions the mesh specifies.
 import time
 from pathlib import Path
 
@@ -42,8 +42,8 @@ def _fsdp_parameter_ids(model):
             if isinstance(module, FSDP_TYPES)}
 
 
+# Only sync weights that are supposed to be replicated.
 def synchronize_hybrid_gradients(model, mesh):
-    """Only sync weights that are supposed to be replicated."""
     params = list(model.parameters())
     expert_ids = _expert_parameter_ids(model)
 
@@ -146,8 +146,8 @@ def data_replica_count(mesh):
     return mesh.size("dp") * mesh.size("fsdp") * mesh.size("ep")
 
 
+# Share a batch across pp, cp and tp ranks of the same data replica.
 def create_batch_group(mesh):
-    """Share a batch across pp, cp and tp ranks of the same data replica."""
     from itertools import product
     my_group = None
     my_leader = None
@@ -162,8 +162,8 @@ def create_batch_group(mesh):
     return my_group, my_leader
 
 
+# Broadcast the replica's tokens to the other model-parallel ranks.
 def broadcast_replica_batch(batch, mesh, batch_group, leader, shape, device):
-    """Broadcast the replica's tokens to the other model-parallel ranks."""
     if mesh.global_rank != leader:
         batch = torch.empty(shape, device=device, dtype=torch.long)
     elif tuple(batch.shape) != tuple(shape):
@@ -212,11 +212,7 @@ class HybridTrainer:
         is_last = mesh.rank("pp") == mesh.size("pp") - 1
         dtype = next(self.model.parameters()).dtype
         for xb, yb in zip(micro_x, micro_y):
-            incoming, output = forward_microbatch(
-                self.model, xb if is_first else None, mesh.rank("pp"), mesh.size("pp"),
-                xb.size(0), xb.size(1), self.model.layers[0].model_args.dim,
-                xb.device, dtype, group=mesh.group("pp"),
-            )
+            incoming, output = forward_microbatch(self.model, xb if is_first else None, mesh.rank("pp"), mesh.size("pp"), xb.size(0), xb.size(1), self.model.layers[0].model_args.dim, xb.device, dtype, group=mesh.group("pp"))
             loss = (
                 F.cross_entropy(output.flatten(0, -2), yb.flatten(), reduction="sum")
                 / y.numel() * loss_scale
@@ -272,8 +268,8 @@ class HybridTrainer:
         }
         return value.item(), norm
 
+    # Save this rank's weights and training state so we can resume later.
     def save(self, folder, model_args):
-        """Save this rank's weights and training state so we can resume later."""
         directory = Path(folder) / f"step-{self.step}"
         directory.mkdir(parents=True, exist_ok=True)
         payload = {

@@ -1,8 +1,6 @@
-"""Run a small Qwen3 training job with five parallelism dimensions on CPU.
-
-Forking lets the 32 workers share memory for the Python/PyTorch imports.
-The workers still communicate through real Gloo process groups.
-"""
+# Run a small Qwen3 training job with five parallelism dimensions on CPU.
+# Forking lets the 32 workers share memory for the Python/PyTorch imports.
+# The workers still communicate through real Gloo process groups.
 import os
 import socket
 import sys
@@ -14,14 +12,7 @@ WORLD_SIZE = 32
 
 
 def _worker(rank, port):
-    os.environ.update(
-        MASTER_ADDR="127.0.0.1",
-        MASTER_PORT=str(port),
-        RANK=str(rank),
-        LOCAL_RANK=str(rank),
-        WORLD_SIZE=str(WORLD_SIZE),
-        OMP_NUM_THREADS="1",
-    )
+    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port), RANK=str(rank), LOCAL_RANK=str(rank), WORLD_SIZE=str(WORLD_SIZE), OMP_NUM_THREADS="1")
     sys.argv = [
         "scripts.pretrain_hybrid",
         "--synthetic",
@@ -54,10 +45,7 @@ def main():
         port = sock.getsockname()[1]
 
     print("Starting 32 real distributed CPU ranks for FSDP+TP+EP+CP+PP", flush=True)
-    mp.start_processes(
-        _worker, args=(port,), nprocs=WORLD_SIZE,
-        join=True, start_method="fork",
-    )
+    mp.start_processes(_worker, args=(port,), nprocs=WORLD_SIZE, join=True, start_method="fork")
     print("PASS: five-way FSDP+TP+EP+CP+PP training finished on 32 CPU ranks", flush=True)
 
 

@@ -1,4 +1,4 @@
-"""Apply the selected parallelism strategies to the Qwen3 model."""
+# Apply the selected parallelism strategies to the Qwen3 model.
 
 from dataclasses import dataclass
 
@@ -30,9 +30,7 @@ def compose_model(model, mesh, sequence_length):
     # each ep rank owns a different set of experts
     if mesh.size("ep") > 1:
         for layer in layers:
-            layer.moe = ExpertParallel(
-                layer.moe, mesh.rank("ep"), mesh.size("ep"), group=mesh.group("ep")
-            )
+            layer.moe = ExpertParallel(layer.moe, mesh.rank("ep"), mesh.size("ep"), group=mesh.group("ep"))
 
     if mesh.size("tp") > 1:
         for layer in layers:

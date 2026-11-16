@@ -1,4 +1,4 @@
-"""Check which ranks own the layers and parameter shards."""
+# Check which ranks own the layers and parameter shards.
 import argparse
 
 import torch
