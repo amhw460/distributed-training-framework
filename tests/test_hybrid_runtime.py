@@ -3,6 +3,7 @@
 torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_runtime --dp 2 --tp 2
 """
 import argparse
+import os
 import tempfile
 from pathlib import Path
 
@@ -60,12 +61,9 @@ def run():
         assert uninterrupted.last_metrics["step_time_s"] > 0
         assert uninterrupted.last_metrics["tokens_per_sec"] > 0
 
-        # All ranks need to use the same directory on a shared filesystem.
-        holder = [None]
-        if mesh.global_rank == 0:
-            holder[0] = tempfile.mkdtemp(prefix="hybrid-resume-")
-        dist.broadcast_object_list(holder, src=0)
-        folder = Path(holder[0])
+        # torchrun supplies the same rendezvous port to each rank. Avoid
+        # broadcast_object_list (which requires NumPy in PyTorch's CPU build).
+        folder = Path(tempfile.gettempdir()) / f"hybrid-resume-{os.environ['MASTER_PORT']}"
         interrupted = make_trainer(mesh, args)
         interrupted.training_step(batch(mesh, 0))
         checkpoint = interrupted.save(folder, args)
