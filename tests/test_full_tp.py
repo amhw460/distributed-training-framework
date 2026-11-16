@@ -22,6 +22,18 @@ def compare(dense, tp, rank, world):
             full = original[full_name]
             dim = 0 if isinstance(module, ColumnwiseLinearParallelism) else 1
             expected = torch.tensor_split(full.detach(), world, dim=dim)[rank]
+            if not torch.allclose(module.weight.detach(), expected, rtol=1e-4, atol=2e-6):
+                diff = (module.weight.detach() - expected).abs()
+                index = diff.reshape(-1).argmax().item()
+                print(
+                    f"TP weight diagnostic rank={rank} name={name} "
+                    f"max_abs={diff.max().item():.9g} "
+                    f"actual={module.weight.detach().reshape(-1)[index].item():.9g} "
+                    f"expected={expected.reshape(-1)[index].item():.9g} "
+                    f"grad_present={module.weight.grad is not None} "
+                    f"dense_grad_present={full.grad is not None}",
+                    flush=True,
+                )
             torch.testing.assert_close(module.weight.detach(), expected, rtol=1e-4, atol=2e-6, msg=f"weight: {name}")
             if full.grad is not None:
                 actual_grad = module.weight.grad
