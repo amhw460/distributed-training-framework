@@ -10,7 +10,7 @@ from framework.tensorparallel import synchronize_tp_head_norm_gradients
 from framework.expertparallel import synchronize_ep_gradients, clip_ep_grad_norm_
 
 class Trainer():
-  def __init__(self, model, optimizer, device, config, tp_mode=False, ep_mode=False):
+  def __init__(self, model, optimizer, device, config, tp_mode=False, ep_mode=False, cp_mode=False):
 
     self.model = model.to(device)
     self.optimizer = optimizer
@@ -19,6 +19,7 @@ class Trainer():
     
     self.tp_mode = tp_mode #tensor parallel
     self.ep_mode = ep_mode
+    self.cp_mode = cp_mode
 
     self.tokensseen = 0 # tokens processed
     self.trainingstep = 0
@@ -27,7 +28,7 @@ class Trainer():
 
     self.world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    batch_multiplier = 1 if self.tp_mode else self.world_size
+    batch_multiplier = 1 if (self.tp_mode or self.cp_mode) else self.world_size
 
     effective_local_batch = self.config.local_batch_size * batch_multiplier
 
@@ -51,6 +52,10 @@ class Trainer():
 
     inputs = tokens[:, :-1]
     labels = tokens[:, 1: ]
+
+    if self.cp_mode:
+      inputs = inputs.tensor_split(self.world_size, dim=1)[dist.get_rank()]
+      labels = labels.tensor_split(self.world_size, dim=1)[dist.get_rank()]
 
     logits = self.model(inputs)
     logits = logits.reshape(-1, logits.shape[-1])
