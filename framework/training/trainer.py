@@ -7,9 +7,10 @@ from framework.gradient_clipping import clip_hybrid_grad_norm_
 import torch.distributed as dist
 from framework.gradient_clipping import clip_tp_grad_norm_
 from framework.tensorparallel import synchronize_tp_head_norm_gradients
+from framework.expertparallel import synchronize_ep_gradients, clip_ep_grad_norm_
 
 class Trainer():
-  def __init__(self, model, optimizer, device, config, tp_mode=False):
+  def __init__(self, model, optimizer, device, config, tp_mode=False, ep_mode=False):
 
     self.model = model.to(device)
     self.optimizer = optimizer
@@ -17,6 +18,7 @@ class Trainer():
     self.config = config
     
     self.tp_mode = tp_mode #tensor parallel
+    self.ep_mode = ep_mode
 
     self.tokensseen = 0 # tokens processed
     self.trainingstep = 0
@@ -79,7 +81,9 @@ class Trainer():
       totalloss += loss
       tokens_this_step += (currentbatch.shape[0] * (currentbatch.shape[1] - 1))
 
-    if self.world_size > 1 and dist.is_initialized() and not self.tp_mode:
+    if self.ep_mode:
+      synchronize_ep_gradients(self.model)
+    elif self.world_size > 1 and dist.is_initialized() and not self.tp_mode:
       synchronize_gradients(self.model) # sync after training, if its tensor parallel each rank has diff part of weight matrix
 
     if self.tp_mode:
@@ -88,7 +92,9 @@ class Trainer():
     avgloss = totalloss / self.steps_gradient_accumulation 
 
     # cliip gradients if they exceed max
-    if self.tp_mode:
+    if self.ep_mode:
+      gradient_norm = clip_ep_grad_norm_(self.model, self.config.maxnorm)
+    elif self.tp_mode:
       gradient_norm = clip_tp_grad_norm_(self.model, self.config.maxnorm)
     else:
       gradient_norm = clip_hybrid_grad_norm_(self.model, self.config.maxnorm)

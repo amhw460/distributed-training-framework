@@ -113,3 +113,23 @@ def synchronize_ep_gradients(model):
     dist.all_reduce(gradient, op=dist.ReduceOp.SUM)
     gradient.div_(total_nodes)
     if param.grad is None: param.grad = gradient
+
+
+def clip_ep_grad_norm_(model, max_norm):
+  # Count replicated weights once, and expert weights only on their owner.
+  expertparams = {id(p) for module in model.modules() if isinstance(module, ExpertParallel)
+                  for expert in module.experts for p in expert.parameters()}
+  parameters = list(model.parameters())
+  normsq = torch.zeros((), dtype=torch.float64, device=parameters[0].device)
+  for param in parameters:
+    if param.grad is None: continue
+    contribution = param.grad.detach().double().square().sum()
+    normsq += contribution if id(param) in expertparams else contribution / dist.get_world_size()
+
+  dist.all_reduce(normsq, op=dist.ReduceOp.SUM)
+  norm = normsq.sqrt().item()
+  coefficient = min(1.0, max_norm / (norm + 1e-6))
+  with torch.no_grad():
+    for param in parameters:
+      if param.grad is not None: param.grad.mul_(coefficient)
+  return norm

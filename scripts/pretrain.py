@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader
 
 from framework.distributed import initialize_distributed, synchronize_model, cleanup_distributed
 from framework.fsdp import shard_model
+from framework.expertparallel import parallelize_ep
 from framework.models.model import Qwen3Model
 from framework.models.model_args import Qwen3ModelArgs
 from framework.training.config import TrainingConfig
@@ -30,7 +31,7 @@ def synthetic_batches(config, rank, vocab_size):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--parallelism", choices=("ddp", "fsdp"), default="fsdp")
+    parser.add_argument("--parallelism", choices=("ddp", "fsdp", "ep"), default="fsdp")
     parser.add_argument("--synthetic", action="store_true", help="Train on random tokens without downloads")
     parser.add_argument("--steps", type=int, default=5)
     parser.add_argument("--vocab-size", type=int, default=127, help="Used only with --synthetic")
@@ -54,6 +55,8 @@ def main():
         torch.set_num_threads(1)
         if options.steps < 1:
             raise ValueError("steps must be positive")
+        if options.parallelism == "ep" and options.experts % world_size:
+            raise ValueError("EP requires experts divisible by world size")
         if options.num_kv_heads < 1 or options.num_heads < 1 or options.num_heads % options.num_kv_heads:
             raise ValueError("num_heads must be divisible by num_kv_heads")
         if options.head_dim < 2 or options.head_dim % 2:
@@ -114,9 +117,11 @@ def main():
         synchronize_model(model)
         if options.parallelism == "fsdp":
             model = shard_model(model)
+        elif options.parallelism == "ep":
+            model = parallelize_ep(model)
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
-        trainer = Trainer(model, optimizer, device, config)
+        trainer = Trainer(model, optimizer, device, config, ep_mode=options.parallelism == "ep")
         trainer.train(source, config.steps)
         if rank == 0:
             print(f"PASS: {options.parallelism.upper()} training entry point completed", flush=True)
