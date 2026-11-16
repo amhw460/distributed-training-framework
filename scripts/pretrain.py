@@ -14,6 +14,8 @@ from torch.utils.data import DataLoader
 from framework.distributed import initialize_distributed, synchronize_model, cleanup_distributed
 from framework.fsdp import shard_model
 from framework.expertparallel import parallelize_ep
+from framework.contextparallel import parallelize_cp
+import torch.distributed as dist
 from framework.models.model import Qwen3Model
 from framework.models.model_args import Qwen3ModelArgs
 from framework.training.config import TrainingConfig
@@ -29,9 +31,20 @@ def synthetic_batches(config, rank, vocab_size):
         )
 
 
+def cp_batches(source, rank, config):
+    iterator = iter(source) if rank == 0 else None
+    while True:
+        if rank == 0:
+            batch = next(iterator)
+        else:
+            batch = torch.empty((config.local_batch_size, config.seqlen + 1), dtype=torch.long)
+        dist.broadcast(batch, src=0)
+        yield batch
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--parallelism", choices=("ddp", "fsdp", "ep"), default="fsdp")
+    parser.add_argument("--parallelism", choices=("ddp", "fsdp", "ep", "cp"), default="fsdp")
     parser.add_argument("--synthetic", action="store_true", help="Train on random tokens without downloads")
     parser.add_argument("--steps", type=int, default=5)
     parser.add_argument("--vocab-size", type=int, default=127, help="Used only with --synthetic")
@@ -57,6 +70,8 @@ def main():
             raise ValueError("steps must be positive")
         if options.parallelism == "ep" and options.experts % world_size:
             raise ValueError("EP requires experts divisible by world size")
+        if options.parallelism == "cp" and options.seq_len % world_size:
+            raise ValueError("CP requires sequence length divisible by world size")
         if options.num_kv_heads < 1 or options.num_heads < 1 or options.num_heads % options.num_kv_heads:
             raise ValueError("num_heads must be divisible by num_kv_heads")
         if options.head_dim < 2 or options.head_dim % 2:
@@ -88,18 +103,21 @@ def main():
         source = None
         if options.synthetic:
             vocab_size = options.vocab_size
-            source = synthetic_batches(config, rank, vocab_size)
+            source = synthetic_batches(config, rank, vocab_size) if options.parallelism != "cp" or rank == 0 else None
         else:
             from transformers import AutoTokenizer
             from framework.data.dataset import build_fineweb_dataset
             tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
             vocab_size = len(tokenizer)
-            source = DataLoader(
-                build_fineweb_dataset(tokenizer, config.seqlen, rank, world_size),
-                batch_size=config.local_batch_size,
-                drop_last=True,
-                num_workers=0,
-            )
+            if options.parallelism != "cp" or rank == 0:
+                source = DataLoader(
+                    build_fineweb_dataset(tokenizer, config.seqlen,
+                                          0 if options.parallelism == "cp" else rank,
+                                          1 if options.parallelism == "cp" else world_size),
+                    batch_size=config.local_batch_size,
+                    drop_last=True,
+                    num_workers=0,
+                )
 
         args = Qwen3ModelArgs(
             vocab_size=vocab_size,
@@ -119,9 +137,13 @@ def main():
             model = shard_model(model)
         elif options.parallelism == "ep":
             model = parallelize_ep(model)
+        elif options.parallelism == "cp":
+            model = parallelize_cp(model)
+            source = cp_batches(source, rank, config)
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
-        trainer = Trainer(model, optimizer, device, config, ep_mode=options.parallelism == "ep")
+        trainer = Trainer(model, optimizer, device, config, ep_mode=options.parallelism == "ep",
+                          cp_mode=options.parallelism == "cp")
         trainer.train(source, config.steps)
         if rank == 0:
             print(f"PASS: {options.parallelism.upper()} training entry point completed", flush=True)
