@@ -1,0 +1,71 @@
+name: Hybrid training correctness
+on:
+  push:
+    branches: [hybrid-mesh]
+    paths:
+      - "framework/**"
+      - "scripts/pretrain_hybrid.py"
+      - "tests/test_hybrid_runtime.py"
+      - ".github/workflows/test-hybrid-train.yml"
+  workflow_dispatch:
+
+jobs:
+  hybrid:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Standalone and two-dimensional combinations
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          set -eux
+          torchrun --standalone --nproc-per-node=1 -m scripts.pretrain_hybrid --synthetic --steps 2 --microbatches 1
+          for flags in '--dp 2 --tp 2' '--tp 2 --cp 2' '--tp 2 --ep 2' '--tp 2 --pp 2' '--tp 2 --fsdp 2' '--ep 2 --fsdp 2' '--pp 2 --cp 2'; do
+            torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid --synthetic --steps 2 $flags
+          done
+      - name: Three-dimensional combinations
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          set -eux
+          for flags in '--pp 2 --ep 2 --tp 2' '--dp 2 --fsdp 2 --cp 2' '--ep 2 --tp 2 --fsdp 2' '--pp 2 --tp 2 --cp 2'; do
+            torchrun --standalone --nproc-per-node=8 -m scripts.pretrain_hybrid --synthetic --steps 2 $flags
+          done
+      - name: Checkpoint resume with sharded model
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          set -eux
+          torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid --synthetic --dp 2 --tp 2 --steps 1 --checkpoint-dir /tmp/hybrid-check --save-every 1
+          torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid --synthetic --dp 2 --tp 2 --steps 2 --resume /tmp/hybrid-check/step-1
+
+      - name: Verify scheduled optimizer and exact checkpoint resume
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          set -eux
+          torchrun --standalone --nproc-per-node=1 -m tests.test_hybrid_runtime
+          torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_runtime --dp 2 --tp 2
+      - name: Verify optimizer options, schedule and JSONL metrics
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          set -eux
+          torchrun --standalone --nproc-per-node=2 -m scripts.pretrain_hybrid --synthetic --dp 2 --steps 3 --optimizer sgd --momentum 0.2 --scheduler cosine --warmup-steps 1 --decay-ratio 0.5 --metrics-file /tmp/hybrid-metrics.jsonl
+          python - <<'PY'
+          import json
+          with open('/tmp/hybrid-metrics.jsonl', encoding='utf-8') as stream:
+              rows = [json.loads(line) for line in stream]
+          assert len(rows) == 3
+          assert [row["step"] for row in rows] == [1, 2, 3]
+          assert [row["tokens_seen"] for row in rows] == [32, 64, 96]
+          assert all(row["tokens_per_sec"] > 0 and row["step_time_s"] > 0 for row in rows)
+          assert rows[0]["lr"] != rows[-1]["lr"]
+          print("PASS: optimizer, scheduler, and JSONL metrics")
+          PY

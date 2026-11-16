@@ -9,31 +9,33 @@ import math
 class GatherShardedWeight(torch.autograd.Function): 
   # pytorch autograd doesnt know how to backprop through dist.allgather, so we write a wrapper class
   @staticmethod
-  def forward(ctx, shard, shape, numel):
-      return gather_params(shard, shape, numel) #reconstructs the weights
+  def forward(ctx, shard, shape, numel, group):
+      ctx.group = group
+      return gather_params(shard, shape, numel, group=group) #reconstructs the weights
 
   @staticmethod
   def backward(ctx, grad_output):
-      grad_shard = reduce_scatter_gradients(grad_output) # gets gradient, then reduce scatters so all ranks have their own gradients
+      grad_shard = reduce_scatter_gradients(grad_output, group=ctx.group) # gets gradient, then reduce scatters so all ranks have their own gradients
 
-      return grad_shard, None, None
+      return grad_shard, None, None, None
 
 class ShardedLinear(nn.Module):
-  def __init__(self, linearlayer: nn.Linear):
+  def __init__(self, linearlayer: nn.Linear, group=None):
     super().__init__()
 
     if linearlayer.bias is not None: raise ValueError ('only bias = false supported rn')
 
-    shard, shape, numel = parameter_sharding(linearlayer.weight)
+    shard, shape, numel = parameter_sharding(linearlayer.weight, group=group)
 
     self.weightshard = nn.Parameter(shard)
+    self.group = group
     self.shape = shape
     self.numel = numel
 
     self.in_features, self.out_features = linearlayer.in_features, linearlayer.out_features
   
   def forward(self, x):
-    weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel)
+    weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel, self.group)
 
     # x * W + b, except no b
     output = nn.functional.linear(input=x, weight=weights, bias = None)
@@ -41,27 +43,29 @@ class ShardedLinear(nn.Module):
     return output
 
 class ShardedEmbedding(nn.Module):
-  def __init__(self, embed: nn.Embedding):
+  def __init__(self, embed: nn.Embedding, group=None):
     super().__init__()
 
-    shard, shape, numel = parameter_sharding(embed.weight)
+    shard, shape, numel = parameter_sharding(embed.weight, group=group)
 
     self.weightshard = nn.Parameter(shard)
+    self.group = group
     self.shape = shape
     self.numel = numel
 
   def forward(self, token_ids):
-    weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel)
+    weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel, self.group)
         
     return nn.functional.embedding(token_ids, weights)
 
 class ShardedRMSNorm(nn.Module):
-  def __init__(self, norm: nn.RMSNorm):
+  def __init__(self, norm: nn.RMSNorm, group=None):
     super().__init__()
 
-    shard, shape, numel = parameter_sharding(norm.weight)
+    shard, shape, numel = parameter_sharding(norm.weight, group=group)
 
     self.weightshard = nn.Parameter(shard)
+    self.group = group
     self.shape = shape
     self.numel = numel
 
@@ -69,12 +73,12 @@ class ShardedRMSNorm(nn.Module):
     self.eps = norm.eps
 
   def forward(self, x):
-    weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel)
+    weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel, self.group)
 
     return nn.functional.rms_norm(x, self.normalized_shape, weight=weights, eps=self.eps)
 
 class ShardedExperts(nn.Module):
-  def __init__(self, experts: nn.ModuleList):
+  def __init__(self, experts: nn.ModuleList, group=None):
     super().__init__()
 
     self.num_experts = len(experts)
@@ -96,15 +100,16 @@ class ShardedExperts(nn.Module):
     combined_weights = torch.cat(flattened_weights)
 
         # Each rank permanently owns only its shard
-    shard, shape, numel = parameter_sharding(combined_weights)
+    shard, shape, numel = parameter_sharding(combined_weights, group=group)
 
     self.weightshard = nn.Parameter(shard)
+    self.group = group
     self.shape = shape
     self.numel = numel
 
   def forward(self, tokenstates, topkindices, topkweights):
     # Gather all expert weights once, across all ranks
-    weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel)
+    weights = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel, self.group)
 
     # Recover the individual weight matrices
     matrices = torch.split(weights, self.weight_numels)
@@ -137,8 +142,8 @@ class ShardedExperts(nn.Module):
 
     return output
     
-def parameter_sharding(parameter_tensor):
-  total_nodes = dist.get_world_size()
+def parameter_sharding(parameter_tensor, group=None):
+  total_nodes = dist.get_world_size(group=group)
 
   # flatten it and split into chunks
 
@@ -156,22 +161,22 @@ def parameter_sharding(parameter_tensor):
 
   params = params.split(shardsize)
 
-  rank = dist.get_rank()
+  rank = dist.get_rank(group=group)
 
   myshard = params[rank].detach().clone()
 
   return myshard, shape, numel
 
-def gather_params(myshard, shape, numel):
+def gather_params(myshard, shape, numel, group=None):
   # reconstruct the original tensor given shards
 
-  total_nodes = dist.get_world_size()
+  total_nodes = dist.get_world_size(group=group)
 
   # thus we know the size of our tensor is going to be worldsize * shardsize
 
   allshards = [torch.empty_like(myshard) for i in range(total_nodes)]
 
-  dist.all_gather(allshards, myshard)
+  dist.all_gather(allshards, myshard, group=group)
 
   allshards = torch.cat(allshards, dim = 0)
   allshards = allshards[:numel]
@@ -179,8 +184,8 @@ def gather_params(myshard, shape, numel):
 
   return allshards
 
-def reduce_scatter_gradients(gradients):
-  total_nodes = dist.get_world_size()
+def reduce_scatter_gradients(gradients, group=None):
+  total_nodes = dist.get_world_size(group=group)
 
   gradients = gradients.reshape(-1)
 
@@ -196,31 +201,87 @@ def reduce_scatter_gradients(gradients):
 
   gradients = gradients.contiguous() 
 
-  dist.reduce_scatter_tensor(output=output, input=gradients, op=dist.ReduceOp.SUM)
+  dist.reduce_scatter_tensor(output=output, input=gradients, op=dist.ReduceOp.SUM, group=group)
 
   output.div_(total_nodes)
 
   return output
 
-def shard_model(model):
-  model.outputprojection = ShardedLinear(model.outputprojection)
-  model.embeddings = ShardedEmbedding(model.embeddings)
-  model.finalRMSnorm = ShardedRMSNorm(model.finalRMSnorm)
+def shard_model(model, group=None):
+  model.outputprojection = ShardedLinear(model.outputprojection, group=group)
+  model.embeddings = ShardedEmbedding(model.embeddings, group=group)
+  model.finalRMSnorm = ShardedRMSNorm(model.finalRMSnorm, group=group)
 
   for layer in model.transformerlayers:
 
-    layer.attention.Wq = ShardedLinear(layer.attention.Wq)
-    layer.attention.Wk = ShardedLinear(layer.attention.Wk)
-    layer.attention.Wv = ShardedLinear(layer.attention.Wv)
-    layer.attention.output = ShardedLinear(layer.attention.output)
+    layer.attention.Wq = ShardedLinear(layer.attention.Wq, group=group)
+    layer.attention.Wk = ShardedLinear(layer.attention.Wk, group=group)
+    layer.attention.Wv = ShardedLinear(layer.attention.Wv, group=group)
+    layer.attention.output = ShardedLinear(layer.attention.output, group=group)
 
-    layer.firstnorm = ShardedRMSNorm(layer.firstnorm)
-    layer.secondnorm = ShardedRMSNorm(layer.secondnorm)
+    layer.firstnorm = ShardedRMSNorm(layer.firstnorm, group=group)
+    layer.secondnorm = ShardedRMSNorm(layer.secondnorm, group=group)
 
-    layer.attention.rmsNormQ = ShardedRMSNorm(layer.attention.rmsNormQ)
-    layer.attention.rmsNormK = ShardedRMSNorm(layer.attention.rmsNormK)
+    layer.attention.rmsNormQ = ShardedRMSNorm(layer.attention.rmsNormQ, group=group)
+    layer.attention.rmsNormK = ShardedRMSNorm(layer.attention.rmsNormK, group=group)
 
-    layer.moe.router.router = ShardedLinear(layer.moe.router.router)
-    layer.moe.experts = ShardedExperts(layer.moe.experts)
+    layer.moe.router.router = ShardedLinear(layer.moe.router.router, group=group)
+    layer.moe.experts = ShardedExperts(layer.moe.experts, group=group)
 
   return model
+
+
+class ShardedTensorParallelLinear(nn.Module):
+  """FSDP-shard the *local TP weight*, preserving the original TP collectives."""
+  def __init__(self, layer, group=None):
+    from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
+    super().__init__()
+    if not isinstance(layer, (ColumnwiseLinearParallelism, RowwiseLinearParallelism)):
+      raise TypeError("expected a tensor-parallel linear")
+    self.columnwise = isinstance(layer, ColumnwiseLinearParallelism)
+    self.tp_group = layer.group
+    self.fsdp_group = group
+    self.shape = tuple(layer.weight.shape)
+    self.numel = layer.weight.numel()
+    shard, _, _ = parameter_sharding(layer.weight.detach(), group=group)
+    self.weightshard = nn.Parameter(shard)
+    self.tp_sharded = True
+
+  def forward(self, x):
+    from framework.tensorparallel import CopyToTensorParallelRegion, ReduceFromTensorParallelRegion
+    weight = GatherShardedWeight.apply(self.weightshard, self.shape, self.numel, self.fsdp_group)
+    if self.columnwise:
+      x = CopyToTensorParallelRegion.apply(x, self.tp_group)
+      return nn.functional.linear(x, weight)
+    output = nn.functional.linear(x, weight)
+    return ReduceFromTensorParallelRegion.apply(output, self.tp_group)
+
+
+def shard_local_modules(module, group=None):
+  """Shard every local leaf parameter after PP/EP/TP partitioning.
+
+  This is intentionally simple: each existing linear/embedding/norm is
+  reconstructed for its forward call and reduce-scattered in backward.
+  No custom flattening, optimizer state partitioning, or overlap.
+  """
+  from framework.tensorparallel import ColumnwiseLinearParallelism, RowwiseLinearParallelism
+
+  for name, child in list(module.named_children()):
+    if isinstance(child, (ColumnwiseLinearParallelism, RowwiseLinearParallelism)):
+      replacement = ShardedTensorParallelLinear(child, group=group)
+    elif isinstance(child, nn.Linear):
+      replacement = ShardedLinear(child, group=group)
+    elif isinstance(child, nn.Embedding):
+      replacement = ShardedEmbedding(child, group=group)
+    elif isinstance(child, nn.RMSNorm):
+      replacement = ShardedRMSNorm(child, group=group)
+    else:
+      shard_local_modules(child, group=group)
+      continue
+    setattr(module, name, replacement)
+
+  # Expert loops must enter all FSDP collectives in the same order,
+  # including experts receiving no tokens on one data-parallel rank.
+  if module.__class__.__name__ in ("MoE", "ExpertParallel"):
+    module.fsdp_mode = True
+  return module

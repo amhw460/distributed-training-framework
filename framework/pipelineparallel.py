@@ -39,8 +39,11 @@ class PipelineStage(nn.Module):
   def forward(self, x):
     tensor = self.embeddings(x) if self.embeddings is not None else x
 
+    offset = getattr(self, "cp_rank", 0) * tensor.shape[1]
+    cosine = self.rope_cosine_values[offset:offset + tensor.shape[1]]
+    sine = self.rope_sine_values[offset:offset + tensor.shape[1]]
     for layer in self.layers:
-      tensor = layer(tensor, self.rope_cosine_values, self.rope_sine_values)
+      tensor = layer(tensor, cosine, sine)
 
     if self.outputprojection is not None:
       tensor = self.outputprojection(self.finalRMSnorm(tensor))
@@ -48,31 +51,31 @@ class PipelineStage(nn.Module):
     return tensor
 
 # Each call processes exactly one microbatch on this stage.
-def forward_microbatch(stage, x, rank, total_nodes, batch_size, seq_len, dim, device, dtype=torch.float32):
+def forward_microbatch(stage, x, rank, total_nodes, batch_size, seq_len, dim, device, dtype=torch.float32, group=None):
     if rank > 0:
         x = torch.empty((batch_size, seq_len, dim), device=device, dtype=dtype)
-        dist.recv(x, src=rank - 1)
+        dist.recv(x, src=dist.get_global_rank(group, rank - 1) if group is not None else rank - 1, group=group)
         x.requires_grad_(True)
 
     output = stage(x)
     if rank < total_nodes - 1:
-        dist.send(output.detach().contiguous(), dst=rank + 1)
+        dist.send(output.detach().contiguous(), dst=dist.get_global_rank(group, rank + 1) if group is not None else rank + 1, group=group)
     return x, output
 
 
-def backward_microbatch(x, output, rank, total_nodes, loss=None):
+def backward_microbatch(x, output, rank, total_nodes, loss=None, group=None):
     if rank == total_nodes - 1:
         loss.backward()
     else:
         grad_output = torch.empty_like(output)
-        dist.recv(grad_output, src=rank + 1)
+        dist.recv(grad_output, src=dist.get_global_rank(group, rank + 1) if group is not None else rank + 1, group=group)
         output.backward(grad_output)
 
     if rank > 0:
-        dist.send(x.grad.contiguous(), dst=rank - 1)
+        dist.send(x.grad.contiguous(), dst=dist.get_global_rank(group, rank - 1) if group is not None else rank - 1, group=group)
 
 
-def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, dim, device, max_norm=None):
+def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, dim, device, max_norm=None, group=None):
     # Rank 0 supplies the batch; all ranks need microbatch sizes, last rank needs labels.
     if rank == 0:
         tokens = tokens.to(device=device, dtype=torch.long).contiguous()
@@ -80,13 +83,13 @@ def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, di
     else:
         shape = torch.empty(2, dtype=torch.long, device=device)
 
-    if total_nodes > 1: dist.broadcast(shape, src=0)
+    if total_nodes > 1: dist.broadcast(shape, src=dist.get_global_rank(group, 0) if group is not None else 0, group=group)
     batch_size, seq_len = shape.tolist()
     if not 1 <= num_microbatches <= batch_size: raise ValueError("invalid microbatch count")
     if seq_len < 2: raise ValueError("sequence length must be at least 2")
 
     if rank != 0: tokens = torch.empty((batch_size, seq_len), dtype=torch.long, device=device)
-    if total_nodes > 1: dist.broadcast(tokens, src=0)
+    if total_nodes > 1: dist.broadcast(tokens, src=dist.get_global_rank(group, 0) if group is not None else 0, group=group)
 
     stage.train()
     optimizer.zero_grad(set_to_none=True)
@@ -98,7 +101,7 @@ def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, di
     # GPipe: all forwards, then all backwards in reverse order.
     for mb in microbatches:
         x, output = forward_microbatch(stage, mb[:, :-1] if rank == 0 else None,
-                                       rank, total_nodes, mb.size(0), seq_len - 1, dim, device, dtype)
+                                       rank, total_nodes, mb.size(0), seq_len - 1, dim, device, dtype, group=group)
         loss = None
         if rank == total_nodes - 1:
             loss = torch.nn.functional.cross_entropy(output.reshape(-1, output.size(-1)),
@@ -106,10 +109,10 @@ def gpipe_step(stage, tokens, optimizer, num_microbatches, rank, total_nodes, di
         saved.append((x, output, loss))
 
     for x, output, loss in reversed(saved):
-        backward_microbatch(x, output, rank, total_nodes, loss)
+        backward_microbatch(x, output, rank, total_nodes, loss, group=group)
 
     if max_norm is not None:
-        clip_pp_grad_norm_(stage, max_norm)
+        clip_pp_grad_norm_(stage, max_norm, group=group)
     optimizer.step()
     if rank == total_nodes - 1:
         return sum(loss.detach().item() for _, _, loss in saved)

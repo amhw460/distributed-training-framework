@@ -1,66 +1,88 @@
 # Distributed Training Framework
 
-A from-scratch Qwen3-MoE training project with manual DDP, FSDP, Tensor Parallelism (TP), and GPipe Pipeline Parallelism (PP). Models and training configuration are parameterized; execution currently uses **CPU/Gloo**. EP and combined multi-dimensional parallelism are not implemented yet.
+A from-scratch Qwen3-MoE training framework with composable data parallelism
+(DP), fully sharded data parallelism (FSDP), tensor parallelism (TP), pipeline
+parallelism (PP / GPipe), context parallelism (CP), and expert parallelism (EP).
 
-## Training
+The `hybrid-mesh` branch provides a single configurable trainer and six-axis
+communication mesh. The mesh dimensions are independent axes in this
+implementation, and their product must equal the number of launched processes.
+No separate training implementations are selected for individual combinations.
 
-From the repository root, using your Python environment:
+## Hybrid training
+
+Run from the repository root:
 
 ```sh
-# CPU-only offline smoke tests (no tokenizer or FineWeb download)
-torchrun --standalone --nproc-per-node=2 -m scripts.pretrain --parallelism ddp --synthetic --steps 2
-torchrun --standalone --nproc-per-node=2 -m scripts.pretrain --parallelism fsdp --synthetic --steps 2
-torchrun --standalone --nproc-per-node=2 -m scripts.pretrain_tp --synthetic --steps 2
+# Four ranks, combining DP and TP.
+torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid \
+  --synthetic --dp 2 --tp 2 --steps 3 \
+  --optimizer adamw --lr 0.001 --weight-decay 0.01 \
+  --scheduler cosine --warmup-steps 1 --decay-ratio 0.5 \
+  --metrics-file outputs/metrics.jsonl \
+  --checkpoint-dir outputs/checkpoints --save-every 1
 
-# Use different rank counts and model/batch configurations
-torchrun --standalone --nproc-per-node=3 -m scripts.pretrain_tp --synthetic \
-  --num-heads 6 --num-kv-heads 3 --head-dim 4 --moe-inter-dim 14 \
-  --num-layers 3 --experts 5 --top-k 3 \
-  --local-batch-size 3 --global-batch-size 9 --seq-len 7
+# A different parallelism combination uses the exact same trainer:
+torchrun --standalone --nproc-per-node=8 -m scripts.pretrain_hybrid \
+  --synthetic --pp 2 --ep 2 --tp 2 --steps 2
+
+# Resume the first run from its step-1 checkpoint, keeping optimizer,
+# schedule, model, batch-size and mesh configuration identical:
+torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid \
+  --synthetic --dp 2 --tp 2 --steps 3 \
+  --optimizer adamw --lr 0.001 --weight-decay 0.01 \
+  --scheduler cosine --warmup-steps 1 --decay-ratio 0.5 \
+  --resume outputs/checkpoints/step-1 \
+  --metrics-file outputs/metrics.jsonl
 ```
 
-Omit `--synthetic` to stream FineWeb and use the Qwen3 tokenizer. `--help` lists available model and training settings. TP requires both Q and KV head counts to be divisible by the number of TP ranks; it also requires the same token batch on every rank (the TP runner broadcasts from rank 0). DDP/FSDP use different data per rank.
+Use `--help` for full settings. All parallel degrees default to 1. The
+available optimizers are AdamW, Adam, and SGD; schedules are constant, linear,
+square-root decay, and cosine decay. Metrics include loss, gradient norm, LR,
+step duration, tokens per second, and cumulative trained tokens. On rank 0,
+`--metrics-file` appends one JSON record per optimizer update.
 
+`--synthetic` uses reproducible generated tokens and needs no downloads.
+Omit it to stream FineWeb with the Qwen3 tokenizer (requires `datasets` and
+`transformers` plus dataset access).
 
-### GPipe pipeline training
+**Checkpointing:** The hybrid trainer writes one model/optimizer/scheduler/RNG
+state file per rank, along with mesh information and training counters. To
+resume, use the same world size, mesh, architecture, and optimizer/scheduler
+configuration. The total schedule length must remain fixed for nonconstant
+schedules. The trainer recreates the FineWeb iterator and skips consumed
+examples on resume; this is not a constant-time, exact stream-cursor restore,
+and it assumes deterministic upstream sample ordering. Checkpoint directories
+must be shared by participating ranks.
 
-On macOS, specify the loopback Gloo interface and an IPv4 rendezvous address:
+The hybrid training path selects NCCL on CUDA machines and Gloo otherwise.
+Current CI runs on CPU/Gloo; multi-GPU/NCCL correctness and performance are
+not yet validated. PP uses a simple GPipe forward-then-backward schedule.
 
-```sh
-export GLOO_SOCKET_IFNAME=lo0
-torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \
-  --master-addr=127.0.0.1 --master-port=29534 \
-  -m scripts.pretrain_pp --synthetic --steps 2 --schedule-steps 4 \
-  --num-layers 3 --batch-size 5 --microbatches 2 \
-  --checkpoint-dir checkpoints/pp --save-every 2
-
-# Resume from step 2, keeping the same LR schedule and model configuration:
-torchrun --nnodes=1 --nproc-per-node=2 --rdzv-backend=static \
-  --master-addr=127.0.0.1 --master-port=29535 \
-  -m scripts.pretrain_pp --synthetic --steps 4 --schedule-steps 4 \
-  --num-layers 3 --batch-size 5 --microbatches 2 \
-  --resume checkpoints/pp/step-2
-```
-
-The trainer uses GPipe microbatch accumulation, global gradient clipping across disjoint pipeline stages, and rank-local model/optimizer/scheduler checkpoints. The `--schedule-steps` setting must remain unchanged across resume. Non-synthetic FineWeb streaming works, but exact data-stream resumption is not supported. PP currently constructs a full model before selecting each rank's layers; it is not yet memory-scalable during initialization.
-
-## Tests
+## Correctness tests
 
 ```sh
-python -m tests
-torchrun --standalone --nproc-per-node=2 -m tests.test_full_fsdp
-torchrun --standalone --nproc-per-node=2 -m tests.test_full_tp
+torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_runtime --dp 2 --tp 2
+torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_dense_reference --dp 2 --tp 2
 torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode tp
-torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode fsdp
-torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode ddp
 ```
 
-CI also exercises TP with 1 and 4 ranks, PP with 1/2/3 ranks, and configurable multi-rank training entry points.
+GitHub Actions also tests several 2D/3D hybrid meshes, checkpoint resume, and
+isolated communication groups. Small floating-point differences may occur
+between distributed and dense reference execution.
 
-## Current limitations
+## Legacy single-strategy runners
 
-- CUDA/NCCL GPU execution is not wired up; the distributed initializer uses CPU/Gloo.
-- FSDP and TP checkpoint/resume are not implemented; do not attempt to save partial rank-local states as complete checkpoints.
-- PP checkpoints are rank-local and require an identical pipeline partition on resume; FineWeb data-stream state is not restored.
-- Manual DDP uses replicated model parameters and explicit gradient synchronization.
-- Large-model scaling, performance, and all combinations of valid hyperparameters have not been benchmarked or validated.
+The original `scripts.pretrain`, `scripts.pretrain_tp`, and
+`scripts.pretrain_pp` runners are retained for existing tests and
+single-strategy experimentation. Prefer `scripts.pretrain_hybrid` for new jobs.
+
+## Scope and limitations
+
+This is a functional training-framework implementation, not a reproduction of
+all of TorchFeather's performance features. It does not yet provide activation
+checkpointing, multiple pipeline schedules, optimized GPU MoE kernels, compile
+integration, automatic mixed precision in the hybrid trainer, or a
+reshardable/world-size-independent checkpoint format. The model is fully
+initialized before stage and parameter partitioning, which may temporarily
+require much more memory than a production large-model implementation.
