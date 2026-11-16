@@ -54,9 +54,17 @@ def synchronize_hybrid_gradients(model, mesh):
     # Each local loss is normalized by its local token count, so average CP.
     if mesh.size("cp") > 1:
         for p in params:
-            if p.grad is not None:
-                dist.all_reduce(p.grad, group=mesh.group("cp"))
-                p.grad.div_(mesh.size("cp"))
+            # Sparse expert routing may leave p.grad absent on only some CP
+            # ranks. Every rank must still issue collectives in the same order.
+            present = torch.tensor(int(p.grad is not None), device=p.device)
+            dist.all_reduce(present, group=mesh.group("cp"))
+            if present.item() == 0:
+                continue
+            grad = p.grad if p.grad is not None else torch.zeros_like(p)
+            dist.all_reduce(grad, group=mesh.group("cp"))
+            grad.div_(mesh.size("cp"))
+            if p.grad is None:
+                p.grad = grad
 
     # EP experts own disjoint expert indices. Routing backward has already
     # summed contributions to their owner; normalize by number of EP batches.
