@@ -70,3 +70,40 @@ class TextDataset(IterableDataset):
   def load_state(self, state):
     self.samples_seen = state
 
+
+
+# read only parquet shards, leaving the manifest and other files alone
+class ParquetDocumentDataset:
+  def __init__(self, directory, rank=0, world_size=1, batch_size=1024):
+    from pathlib import Path
+    self.directory = Path(directory)
+    self.files = sorted(self.directory.glob("part-*.parquet"))
+    if not self.files:
+      raise ValueError(f"No part-*.parquet files found in {self.directory}")
+    if world_size < 1 or not 0 <= rank < world_size:
+      raise ValueError("Invalid data replica rank or world size")
+    if batch_size < 1:
+      raise ValueError("batch_size must be positive")
+
+    self.rank = rank
+    self.world_size = world_size
+    self.batch_size = batch_size
+
+  # stream the text column in batches and give each replica different documents
+  def __iter__(self):
+    import pyarrow.parquet as pq
+
+    index = 0
+    for path in self.files:
+      parquet = pq.ParquetFile(path)
+      for batch in parquet.iter_batches(batch_size=self.batch_size, columns=["text"]):
+        for text in batch.column(0).to_pylist():
+          if index % self.world_size == self.rank:
+            yield {"text": text}
+          index += 1
+
+
+# reuse the existing tokenization and sequence packing for local parquet data
+def build_parquet_dataset(directory, tokenizer, sequencelen, rank=0, world_size=1):
+  documents = ParquetDocumentDataset(directory, rank=rank, world_size=world_size)
+  return TextDataset(documents, tokenizer, sequencelen)

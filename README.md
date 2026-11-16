@@ -100,3 +100,13 @@ python -m scripts.prepare_data --max-documents 100000 --output-dir data/fineweb-
 ```
 
 The output contains `part-00000.parquet`, `part-00001.parquet`, etc., plus `manifest.json`. The manifest records source, seed, cleaning options, document counts and rejection reasons. The output directory must be new so existing datasets are never overwritten. Generated datasets under `data/` are ignored by Git.
+
+## Training from prepared Parquet data
+
+Use the dataset produced above with the same hybrid trainer. The data loader reads only `part-*.parquet` (not `manifest.json`), tokenizes documents with the Qwen3 tokenizer and packs them into fixed-length training examples.
+
+```sh
+torchrun --standalone --nproc-per-node=1 -m scripts.pretrain_hybrid --dataset-path data/fineweb-100k --steps 5 --seq-len 128
+```
+
+Without `--dataset-path`, training continues to stream FineWeb. The local reader assigns each document to one DP/FSDP/EP data replica. TP/CP/PP ranks still share that replica's batch using the existing broadcast. The loader currently uses `num_workers=0`; it reads files incrementally, but does not loop over the dataset indefinitely. Checkpoint resume reconstructs and skips consumed packed samples, so the Parquet data and replica configuration must stay the same.

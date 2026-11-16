@@ -26,6 +26,7 @@ def options():
     for axis in ParallelMesh.DIMENSIONS:
         p.add_argument("--" + axis, type=int, default=1)
     p.add_argument("--synthetic", action="store_true")
+    p.add_argument("--dataset-path", type=Path)
     p.add_argument("--steps", type=int, default=5)
     p.add_argument("--local-batch-size", type=int, default=2)
     p.add_argument("--global-batch-size", type=int, default=None)
@@ -62,6 +63,8 @@ def options():
 
 def main():
     cfg = options()
+    if cfg.synthetic and cfg.dataset_path is not None:
+        raise ValueError("--synthetic and --dataset-path cannot be used together")
     if cfg.steps < 1 or cfg.local_batch_size < 1 or cfg.seq_len < 1:
         raise ValueError("steps, local batch size, and sequence length must be positive")
     if cfg.microbatches < 1 or cfg.microbatches > cfg.local_batch_size or cfg.local_batch_size % cfg.microbatches:
@@ -130,6 +133,8 @@ def main():
         }
         if cfg.scheduler != "constant":
             resume_config["schedule_steps"] = cfg.steps
+        if cfg.dataset_path is not None:
+            resume_config["dataset_path"] = str(cfg.dataset_path.resolve())
         trainer = HybridTrainer(model, mesh, optimizer, cfg.max_norm, cfg.microbatches,
                                 scheduler=scheduler, run_config=resume_config)
         if cfg.resume:
@@ -140,8 +145,11 @@ def main():
         dataset = None
         if not cfg.synthetic and mesh.global_rank == leader:
             # each dp/fsdp/ep replica loads its own data
-            from framework.data.dataset import build_fineweb_dataset
-            dataset = build_fineweb_dataset(tokenizer, cfg.seq_len, replica_index(mesh), num_replicas)
+            from framework.data.dataset import build_fineweb_dataset, build_parquet_dataset
+            if cfg.dataset_path is not None:
+                dataset = build_parquet_dataset(cfg.dataset_path, tokenizer, cfg.seq_len, replica_index(mesh), num_replicas)
+            else:
+                dataset = build_fineweb_dataset(tokenizer, cfg.seq_len, replica_index(mesh), num_replicas)
             dataset.samples_seen = trainer.step * accumulation * cfg.local_batch_size
             source = iter(DataLoader(dataset, batch_size=cfg.local_batch_size, drop_last=True, num_workers=0))
 

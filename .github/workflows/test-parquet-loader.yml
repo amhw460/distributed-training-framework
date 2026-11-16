@@ -1,0 +1,24 @@
+name: Parquet data loader correctness
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "framework/data/dataset.py"
+      - "scripts/pretrain_hybrid.py"
+      - "tests/test_parquet_dataset.py"
+      - ".github/workflows/test-parquet-loader.yml"
+  workflow_dispatch:
+
+jobs:
+  loader:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install torch pyarrow
+      - name: Test local parquet reading, sharding, packing and resume
+        run: python -m unittest tests.test_parquet_dataset -v
