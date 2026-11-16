@@ -138,6 +138,7 @@ def synchronize_tp_head_norm_gradients(model, group=None):
   for layer in model.transformerlayers:
     attention = layer.attention
     for norm in (attention.rmsNormQ, attention.rmsNormK):
-      if norm.weight.grad is None:
+      parameter = norm.weightshard if hasattr(norm, "weightshard") else norm.weight
+      if parameter.grad is None:
         raise RuntimeError("Expected Q/K norm gradient during TP training")
-      dist.all_reduce(norm.weight.grad, op=dist.ReduceOp.SUM, group=group)
+      dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM, group=group)
