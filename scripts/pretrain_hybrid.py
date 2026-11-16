@@ -1,31 +1,24 @@
-"""Train the Qwen3-MoE model using one composable ParallelMesh.
-
-CPU/Gloo smoke:
-    torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid \
-      --synthetic --dp 2 --tp 2 --steps 2
-
-Every axis defaults to 1. The product of axis sizes must equal WORLD_SIZE.
-"""
+"""Train Qwen3 MoE with any of the supported mesh parallelism dimensions."""
 
 import argparse
-from pathlib import Path
-import os
 import json
+import os
 import time
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
 
+from framework.hybrid_train import (
+    HybridTrainer, broadcast_replica_batch, create_batch_group,
+    data_replica_count, replica_index,
+)
+from framework.model_composer import compose_model
 from framework.models.model import Qwen3Model
 from framework.models.model_args import Qwen3ModelArgs
 from framework.parallel_mesh import ParallelMesh
-from framework.training.runtime import build_optimizer, build_hybrid_scheduler
-from framework.model_composer import compose_model
-from framework.hybrid_train import (
-    HybridTrainer, create_batch_group, broadcast_replica_batch,
-    replica_index, data_replica_count,
-)
+from framework.training.runtime import build_hybrid_scheduler, build_optimizer
 
 
 def options():
@@ -98,7 +91,9 @@ def main():
             device = torch.device("cpu")
             torch.set_num_threads(1)
 
-        mesh = ParallelMesh(**{axis: getattr(cfg, axis) for axis in ParallelMesh.DIMENSIONS})
+        mesh = ParallelMesh(
+            **{axis: getattr(cfg, axis) for axis in ParallelMesh.DIMENSIONS}
+        )
         group, leader = create_batch_group(mesh)
         num_replicas = data_replica_count(mesh)
         nominal_global = cfg.local_batch_size * num_replicas
@@ -126,8 +121,7 @@ def main():
             head_dim=cfg.head_dim, experts=cfg.experts, k=cfg.top_k,
         )
         dense = Qwen3Model(args).to(device)
-        # The seed is common across all ranks, so replicated parameters start
-        # identically; partitioning then selects the appropriate rank-local shards.
+        # start from the same weights on every rank before we shard the model
         composed = compose_model(dense, mesh, cfg.seq_len)
         model = composed.model
         del dense
@@ -160,12 +154,14 @@ def main():
 
         dataset = None
         if not cfg.synthetic and mesh.global_rank == leader:
-            # FSDP/DP/EP ranks represent distinct independent token streams.
+            # each dp/fsdp/ep replica loads its own data
             from framework.data.dataset import build_fineweb_dataset
             dataset = build_fineweb_dataset(tokenizer, cfg.seq_len, replica_index(mesh), num_replicas)
             dataset.samples_seen = trainer.step * accumulation * cfg.local_batch_size
-            source = iter(DataLoader(dataset, batch_size=cfg.local_batch_size,
-                                     drop_last=True, num_workers=0))
+            source = iter(DataLoader(
+                dataset, batch_size=cfg.local_batch_size,
+                drop_last=True, num_workers=0,
+            ))
 
         if mesh.global_rank == 0:
             print(composed.plan.describe(), flush=True)
@@ -194,10 +190,15 @@ def main():
             loss, norm = trainer.training_step(batches)
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
-            # Include data loading and broadcast, not only model/optimizer work.
-            elapsed = torch.tensor(time.perf_counter() - step_started, dtype=torch.float64, device=device)
+            # this includes loading and broadcasting data, not just the training step
+            elapsed = torch.tensor(
+                time.perf_counter() - step_started,
+                dtype=torch.float64, device=device,
+            )
             dist.all_reduce(elapsed, op=dist.ReduceOp.MAX)
-            trainer.last_metrics["end_to_end_tokens_per_sec"] = trainer.last_metrics["step_tokens"] / elapsed.item()
+            trainer.last_metrics["end_to_end_tokens_per_sec"] = (
+                trainer.last_metrics["step_tokens"] / elapsed.item()
+            )
             if mesh.global_rank == 0:
                 metrics = trainer.last_metrics
                 print(
