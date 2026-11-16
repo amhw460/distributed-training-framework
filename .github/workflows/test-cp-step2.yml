@@ -1,4 +1,4 @@
-name: CP Step 2 Qwen3 GQA correctness
+name: Context parallel correctness
 
 on:
   push:
@@ -24,3 +24,15 @@ jobs:
           torchrun --standalone --nproc-per-node=1 -m tests.test_cp_gqa
           torchrun --standalone --nproc-per-node=2 -m tests.test_cp_gqa
           torchrun --standalone --nproc-per-node=3 -m tests.test_cp_gqa
+      - name: Test full CP training against dense reference
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=1 -m tests.test_cp_training
+          torchrun --standalone --nproc-per-node=2 -m tests.test_cp_training
+          torchrun --standalone --nproc-per-node=3 -m tests.test_cp_training
+      - name: Smoke test CP training entrypoint
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          torchrun --standalone --nproc-per-node=2 -m scripts.pretrain --parallelism cp --synthetic --steps 2 --seq-len 16 --local-batch-size 2 --global-batch-size 4
