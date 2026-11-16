@@ -11,6 +11,7 @@ import argparse
 from pathlib import Path
 import os
 import json
+import time
 
 import torch
 import torch.distributed as dist
@@ -170,6 +171,7 @@ def main():
             print(composed.plan.describe(), flush=True)
 
         for step in range(trainer.step, cfg.steps):
+            step_started = time.perf_counter()
             batches = []
             for micro in range(accumulation):
                 batch = None
@@ -190,6 +192,12 @@ def main():
                 batches.append(batch)
 
             loss, norm = trainer.training_step(batches)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            # Include data loading and broadcast, not only model/optimizer work.
+            elapsed = torch.tensor(time.perf_counter() - step_started, dtype=torch.float64, device=device)
+            dist.all_reduce(elapsed, op=dist.ReduceOp.MAX)
+            trainer.last_metrics["end_to_end_tokens_per_sec"] = trainer.last_metrics["step_tokens"] / elapsed.item()
             if mesh.global_rank == 0:
                 metrics = trainer.last_metrics
                 print(
@@ -197,7 +205,8 @@ def main():
                     f"grad_norm={metrics['grad_norm']:.6f} lr={metrics['lr']:.8g} "
                     f"tokens_seen={metrics['tokens_seen']} "
                     f"step_time_s={metrics['step_time_s']:.4f} "
-                    f"tokens_per_sec={metrics['tokens_per_sec']:.2f}",
+                    f"tokens_per_sec={metrics['tokens_per_sec']:.2f} "
+                    f"end_to_end_tokens_per_sec={metrics['end_to_end_tokens_per_sec']:.2f}",
                     flush=True,
                 )
                 if cfg.metrics_file is not None:
