@@ -1,123 +1,79 @@
 # Distributed Training Framework
 
-A from-scratch Qwen3-MoE training framework with composable data parallelism
-(DP), fully sharded data parallelism (FSDP), tensor parallelism (TP), pipeline
-parallelism (PP / GPipe), context parallelism (CP), and expert parallelism (EP).
+A PyTorch training framework for Qwen3-style Mixture-of-Experts models, supporting composable **data parallelism (DP), fully sharded data parallelism (FSDP), tensor parallelism (TP), pipeline parallelism (PP), context parallelism (CP), and expert parallelism (EP)**.
 
-The `hybrid-mesh` branch provides a single configurable trainer and six-axis
-communication mesh. The mesh dimensions are independent axes in this
-implementation, and their product must equal the number of launched processes.
-No separate training implementations are selected for individual combinations.
+A six-dimensional process-group mesh controls model partitioning, communication, and training. Parallelism degrees can be combined through one training entry point.
 
-## Hybrid training
+## Setup
 
-Run from the repository root:
+Install PyTorch for your CPU or CUDA environment, then install the data dependencies:
 
-```sh
-# Four ranks, combining DP and TP.
-torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid \
-  --synthetic --dp 2 --tp 2 --steps 3 \
-  --optimizer adamw --lr 0.001 --weight-decay 0.01 \
-  --scheduler cosine --warmup-steps 1 --decay-ratio 0.5 \
-  --metrics-file outputs/metrics.jsonl \
-  --checkpoint-dir outputs/checkpoints --save-every 1
-
-# A different parallelism combination uses the exact same trainer:
-torchrun --standalone --nproc-per-node=8 -m scripts.pretrain_hybrid \
-  --synthetic --pp 2 --ep 2 --tp 2 --steps 2
-
-# Resume the first run from its step-1 checkpoint, keeping optimizer,
-# schedule, model, batch-size and mesh configuration identical:
-torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid \
-  --synthetic --dp 2 --tp 2 --steps 3 \
-  --optimizer adamw --lr 0.001 --weight-decay 0.01 \
-  --scheduler cosine --warmup-steps 1 --decay-ratio 0.5 \
-  --resume outputs/checkpoints/step-1 \
-  --metrics-file outputs/metrics.jsonl
+```bash
+pip install torch transformers datasets pyarrow
 ```
 
-Use `--help` for full settings. All parallel degrees default to 1. The
-available optimizers are AdamW, Adam, and SGD; schedules are constant, linear,
-square-root decay, and cosine decay. Metrics include loss, gradient norm, LR,
-step duration, tokens per second, and cumulative trained tokens. On rank 0,
-`--metrics-file` appends one JSON record per optimizer update.
+Run commands from the repository root. Distributed jobs use `torchrun` and require the product of the six parallelism degrees to equal the process count. Unspecified degrees default to 1.
 
-`--synthetic` uses reproducible generated tokens and needs no downloads.
-Omit it to stream FineWeb with the Qwen3 tokenizer (requires `datasets` and
-`transformers` plus dataset access).
+## Training
 
-**Checkpointing:** The hybrid trainer writes one model/optimizer/scheduler/RNG
-state file per rank, along with mesh information and training counters. To
-resume, use the same world size, mesh, architecture, and optimizer/scheduler
-configuration. The total schedule length must remain fixed for nonconstant
-schedules. The trainer recreates the FineWeb iterator and skips consumed
-examples on resume; this is not a constant-time, exact stream-cursor restore,
-and it assumes deterministic upstream sample ordering. Checkpoint directories
-must be shared by participating ranks.
+Run a synthetic-data smoke test without downloading a dataset:
 
-The hybrid training path selects NCCL on CUDA machines and Gloo otherwise.
-Current CI runs on CPU/Gloo; multi-GPU/NCCL correctness and performance are
-not yet validated. PP uses a simple GPipe forward-then-backward schedule.
+```bash
+torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid \
+  --synthetic --dp 2 --tp 2 --steps 5
+```
 
-## Correctness tests
+For real data, omit `--synthetic` to stream FineWeb or specify `--dataset-path` to train from prepared Parquet shards. Set model size, sequence length, batch sizes, and parallelism degrees through CLI options:
 
-```sh
-torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_runtime --dp 2 --tp 2
+```bash
+torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid \
+  --dp 2 --tp 2 --seq-len 128 --steps 100
+```
+
+Use `python -m scripts.pretrain_hybrid --help` for all options. The trainer supports gradient accumulation, GPipe microbatches, AdamW/Adam/SGD, learning-rate schedules, gradient clipping, and JSONL metrics.
+
+## Preparing data
+
+Prepare a cleaned, deduplicated FineWeb subset as compressed Parquet shards:
+
+```bash
+python -m scripts.prepare_data --output-dir data/fineweb-100k
+```
+
+Inspect document lengths, sampled token lengths, and cleaning statistics:
+
+```bash
+python -m scripts.inspect_data --dataset-path data/fineweb-100k
+```
+
+Train from the saved dataset:
+
+```bash
+torchrun --standalone --nproc-per-node=4 -m scripts.pretrain_hybrid \
+  --dp 2 --tp 2 --dataset-path data/fineweb-100k --seq-len 128 --steps 100
+```
+
+The data loader tokenizes documents with the Qwen3 tokenizer, packs fixed-length next-token prediction examples, and assigns disjoint documents to data replicas. Model-parallel workers share each replica's batch.
+
+## Checkpoints and metrics
+
+Enable periodic per-rank checkpoints and training metrics with:
+
+```bash
+--checkpoint-dir outputs/checkpoints --save-every 10 --metrics-file outputs/metrics.jsonl
+```
+
+Resume using `--resume outputs/checkpoints/step-10` with the same world size, mesh, model, optimizer, and training configuration. Checkpoints preserve model, optimizer, scheduler, RNG state, and training counters; resuming a dataset stream replays and skips consumed samples.
+
+## Tests
+
+```bash
+python -m unittest tests.test_cleaning tests.test_prepare_data tests.test_parquet_dataset
 torchrun --standalone --nproc-per-node=4 -m tests.test_hybrid_dense_reference --dp 2 --tp 2
-torchrun --standalone --nproc-per-node=3 -m tests.test_parameter_variations --mode tp
 ```
 
-GitHub Actions also tests several 2D/3D hybrid meshes, checkpoint resume, and
-isolated communication groups. Small floating-point differences may occur
-between distributed and dense reference execution.
+Additional distributed correctness tests run in GitHub Actions.
 
-## Legacy single-strategy runners
+## Current scope
 
-The original `scripts.pretrain`, `scripts.pretrain_tp`, and
-`scripts.pretrain_pp` runners are retained for existing tests and
-single-strategy experimentation. Prefer `scripts.pretrain_hybrid` for new jobs.
-
-## Scope and limitations
-
-This is a functional training-framework implementation, not a reproduction of
-all of TorchFeather's performance features. It does not yet provide activation
-checkpointing, multiple pipeline schedules, optimized GPU MoE kernels, compile
-integration, automatic mixed precision in the hybrid trainer, or a
-reshardable/world-size-independent checkpoint format. The model is fully
-initialized before stage and parameter partitioning, which may temporarily
-require much more memory than a production large-model implementation.
-
-## Preparing a FineWeb sample
-
-Install the data dependencies with `pip install datasets pyarrow`. The preparation script streams documents, normalizes and filters them, removes exact duplicates, and saves cleaned text in compressed Parquet shards. It does not create a train/test split or tokenize the text.
-
-```sh
-# Try 100 documents first.
-python -m scripts.prepare_data --max-documents 100 --output-dir data/fineweb-smoke
-
-# Prepare 100,000 documents (default size), writing up to 10,000 kept documents per shard.
-python -m scripts.prepare_data --max-documents 100000 --output-dir data/fineweb-100k
-```
-
-The output contains `part-00000.parquet`, `part-00001.parquet`, etc., plus `manifest.json`. The manifest records source, seed, cleaning options, document counts and rejection reasons. The output directory must be new so existing datasets are never overwritten. Generated datasets under `data/` are ignored by Git.
-
-## Training from prepared Parquet data
-
-Use the dataset produced above with the same hybrid trainer. The data loader reads only `part-*.parquet` (not `manifest.json`), tokenizes documents with the Qwen3 tokenizer and packs them into fixed-length training examples.
-
-```sh
-torchrun --standalone --nproc-per-node=1 -m scripts.pretrain_hybrid --dataset-path data/fineweb-100k --steps 5 --seq-len 128
-```
-
-Without `--dataset-path`, training continues to stream FineWeb. The local reader assigns each document to one DP/FSDP/EP data replica. TP/CP/PP ranks still share that replica's batch using the existing broadcast. The loader currently uses `num_workers=0`; it reads files incrementally, but does not loop over the dataset indefinitely. Checkpoint resume reconstructs and skips consumed packed samples, so the Parquet data and replica configuration must stay the same.
-
-## Inspecting prepared data
-
-Generate a standalone HTML report from the saved Parquet shards. This scans word lengths for every document and uses a reproducible random sample for Qwen3 token lengths and text previews. The report includes the cleaning counts from the manifest. No web server or charting library is required.
-
-```sh
-python -m scripts.inspect_data --dataset-path data/fineweb-100k --sample-size 1000
-open data/fineweb-100k/report.html
-```
-
-The default output is `report.html` inside the dataset directory; use `--output` to place it elsewhere, and `--previews` to change the number of sample excerpts. Token lengths are measured on the sample rather than all 99k documents to keep inspection inexpensive.
+The framework prioritizes correctness and composability over performance. It uses GPipe for pipeline scheduling, initializes the dense model before partitioning, and currently validates distributed configurations primarily on CPU/Gloo; multi-GPU/NCCL performance is not yet established.

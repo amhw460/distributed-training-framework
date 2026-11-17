@@ -1,7 +1,7 @@
 name: Hybrid training correctness
 on:
   push:
-    branches: [main, cleanup-hybrid-code-style]
+    branches: [main]
     paths:
       - "framework/**"
       - "scripts/pretrain_hybrid.py"

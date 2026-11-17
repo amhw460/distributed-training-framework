@@ -2,8 +2,13 @@ name: Context parallel correctness
 
 on:
   push:
-    branches:
-      - cp-step2-validation
+    branches: [main]
+    paths:
+      - "framework/**"
+      - "scripts/pretrain.py"
+      - "tests/test_cp_gqa.py"
+      - "tests/test_cp_training.py"
+      - ".github/workflows/test-cp-step2.yml"
   workflow_dispatch:
 
 jobs:

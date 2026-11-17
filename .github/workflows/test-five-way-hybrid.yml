@@ -1,7 +1,7 @@
 name: Five-way hybrid CPU distributed training
 on:
   push:
-    branches: [main, test-five-way-hybrid]
+    branches: [main]
     paths:
       - "tests/test_five_way_hybrid.py"
       - ".github/workflows/test-five-way-hybrid.yml"

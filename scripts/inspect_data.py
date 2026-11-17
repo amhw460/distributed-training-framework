@@ -24,17 +24,32 @@ def histogram(values, bounds):
     return list(zip(labels, counts))
 
 
-# render a labeled bar chart without any external plotting dependencies
+# render a basic histogram with axes
 def chart(title, values, bounds):
     bars = histogram(values, bounds)
-    largest = max((count for _, count in bars), default=0)
-    result = [f"<section class='panel'><h2>{html.escape(title)}</h2>"]
-    for label, count in bars:
-        width = 100 * count / largest if largest else 0
-        result.append(f"<div class='bar-row'><span class='range'>{html.escape(label)}</span><div class='track'><div class='fill' style='width:{width:.2f}%'></div></div><span class='count'>{count:,}</span></div>")
-    result.append("</section>")
-    return "\n".join(result)
+    width, height = 800, 260
+    left, right, top, bottom = 56, 12, 16, 48
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    maximum = max((count for _, count in bars), default=0) or 1
+    step = plot_width / len(bars)
 
+    result = [f"<section><h2>{html.escape(title)}</h2><svg viewBox='0 0 {width} {height}' role='img' aria-label='{html.escape(title)}'>"]
+    for tick in range(5):
+        value = maximum * tick / 4
+        y = top + plot_height * (1 - tick / 4)
+        result.append(f"<line class='grid' x1='{left}' y1='{y:.1f}' x2='{width - right}' y2='{y:.1f}'/>")
+        result.append(f"<text class='axis-label' x='{left - 8}' y='{y + 4:.1f}' text-anchor='end'>{value:,.0f}</text>")
+
+    for i, (label, count) in enumerate(bars):
+        x = left + (i + 0.1) * step
+        bar_height = plot_height * count / maximum
+        y = top + plot_height - bar_height
+        result.append(f"<rect class='bar' x='{x:.1f}' y='{y:.1f}' width='{step * 0.8:.1f}' height='{bar_height:.1f}'/>")
+        result.append(f"<text class='axis-label' x='{x + step * 0.4:.1f}' y='{height - 22}' text-anchor='middle'>{html.escape(label)}</text>")
+
+    result.append("</svg></section>")
+    return "\n".join(result)
 
 # inspect all document lengths, but tokenize only a random bounded-size sample
 def inspect_dataset(dataset_path, output_path, tokenizer, sample_size=1000, preview_count=5, seed=42):
@@ -80,17 +95,23 @@ def inspect_dataset(dataset_path, output_path, tokenizer, sample_size=1000, prev
     source = manifest.get("source", "Local Parquet dataset")
     cleaning = manifest.get("stats", {})
 
-    cards = [("Documents", f"{total:,}"), ("Average words", f"{average_words:,.0f}"), ("Median words", f"{median_words:,}"), ("Tokenized sample", f"{len(examples):,}")]
-    card_html = "\n".join(f"<div class='stat'><strong>{value}</strong><span>{label}</span></div>" for label, value in cards)
-    cleaning_html = "\n".join(f"<div class='metric'><span>{html.escape(label)}</span><strong>{cleaning[key]:,}</strong></div>" for key, label in [("processed", "Processed"), ("kept", "Kept"), ("empty", "Empty"), ("too_short", "Too short"), ("duplicate", "Duplicate")] if key in cleaning)
-    if not cleaning_html:
-        cleaning_html = "<p>No cleaning manifest was found.</p>"
+    summary = [
+        ("Documents", f"{total:,}"),
+        ("Average words", f"{average_words:,.0f}"),
+        ("Median words", f"{median_words:,}"),
+        ("Tokenized sample", f"{len(examples):,}"),
+        ("Average sample tokens", f"{average_tokens:,.0f}"),
+    ]
+    summary_html = "\n".join(f"<tr><th>{html.escape(label)}</th><td><strong>{value}</strong></td></tr>" for label, value in summary)
+    cleaning_html = "\n".join(f"<tr><th>{html.escape(label)}</th><td>{cleaning[key]:,}</td></tr>" for key, label in [("processed", "Processed"), ("kept", "Kept"), ("empty", "Empty"), ("too_short", "Too short"), ("duplicate", "Duplicate")] if key in cleaning)
+    cleaning_html = f"<table>{cleaning_html}</table>" if cleaning_html else "<p>No cleaning manifest was found.</p>"
 
     # escape document text before adding it to HTML
     previews = []
     for index, text in examples[:preview_count]:
         excerpt = text[:600] + ("…" if len(text) > 600 else "")
-        previews.append(f"<article class='preview'><div class='preview-label'>Document #{index + 1:,}</div><pre>{html.escape(excerpt)}</pre></article>")
+        previews.append(f"<details><summary>Document #{index + 1:,}</summary><pre>{html.escape(excerpt)}</pre></details>")
+
 
     doc_chart = chart("Document lengths (words, all documents)", word_lengths, WORD_BINS)
     token_chart = chart(f"Token lengths (sample of {len(token_lengths):,} documents)", token_lengths, TOKEN_BINS)
@@ -101,39 +122,36 @@ def inspect_dataset(dataset_path, output_path, tokenizer, sample_size=1000, prev
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dataset inspection</title>
 <style>
-* {{ box-sizing: border-box; }}
-body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6f8; color: #171923; margin: 0; }}
-main {{ max-width: 1000px; margin: 48px auto; padding: 0 24px 64px; }}
-h1 {{ font-size: 32px; letter-spacing: -.03em; margin-bottom: 8px; }}
-h2 {{ font-size: 19px; margin: 0 0 20px; }}
-.subtitle {{ color: #626977; margin: 0 0 28px; overflow-wrap: anywhere; }}
-.stats {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }}
-.stat, .panel {{ background: white; border: 1px solid #e3e5ea; border-radius: 12px; padding: 24px; }}
-.stat strong {{ font-size: 28px; display: block; }}
-.stat span, .preview-label {{ color: #646b79; font-size: 13px; }}
-.panels {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }}
-.bar-row {{ display: grid; grid-template-columns: 82px minmax(0, 1fr) 60px; align-items: center; gap: 10px; margin: 12px 0; font-size: 12px; }}
-.track {{ height: 17px; border-radius: 4px; background: #eff1f5; overflow: hidden; }}
-.fill {{ height: 100%; background: #4f74c8; border-radius: 4px; }}
-.count {{ text-align: right; font-variant-numeric: tabular-nums; }}
-.metric {{ display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eceef2; }}
-.metric:last-child {{ border-bottom: 0; }}
-.metric strong {{ font-variant-numeric: tabular-nums; }}
-.preview {{ padding: 14px 0; border-top: 1px solid #eceef2; }}
-.preview pre {{ white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; font-size: 13px; line-height: 1.55; }}
-.note {{ color: #626977; font-size: 13px; line-height: 1.5; margin: 16px 0 24px; }}
-@media (max-width: 760px) {{ .stats {{ grid-template-columns: repeat(2, 1fr); }} .panels {{ grid-template-columns: 1fr; }} }}
+body {{ font-family: Arial, sans-serif; color: #222; background: white; margin: 0; }}
+main {{ max-width: 900px; margin: 36px auto; padding: 0 20px 40px; }}
+h1 {{ font-size: 24px; }}
+h2 {{ font-size: 18px; font-weight: 600; margin: 30px 0 12px; }}
+table {{ border-collapse: collapse; width: 100%; max-width: 420px; }}
+th, td {{ border-bottom: 1px solid #ddd; padding: 7px 12px 7px 0; }}
+th {{ text-align: left; font-weight: normal; }}
+td {{ text-align: right; font-variant-numeric: tabular-nums; }}
+svg {{ display: block; width: 100%; height: auto; }}
+.grid {{ stroke: #ddd; stroke-width: 1; }}
+.bar {{ fill: #777; }}
+.axis-label {{ font-family: Arial, sans-serif; font-size: 11px; fill: #444; }}
+.subtitle, .note {{ font-size: 13px; color: #555; }}
+details {{ border-bottom: 1px solid #ddd; padding: 10px 0; }}
+pre {{ font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }}
 </style>
 </head>
 <body>
 <main>
 <h1>Dataset inspection</h1>
-<p class="subtitle">{html.escape(source)} · {len(files)} Parquet shards · seed {seed}</p>
-<div class="stats">{card_html}</div>
-<div class="panels">{doc_chart}{token_chart}</div>
-<p class="note">Word lengths are measured over all saved documents. Token lengths use a reproducible random sample of {len(examples):,} documents, tokenized without special tokens. Counts in the two charts therefore have different denominators. Average sampled token length: {average_tokens:,.0f}.</p>
-<section class="panel"><h2>Cleaning results</h2>{cleaning_html}</section>
-<section class="panel" style="margin-top:20px"><h2>Sample documents</h2>{"".join(previews) if previews else "<p>No samples available.</p>"}</section>
+<p class="subtitle">{html.escape(source)} · {len(files)} Parquet shards</p>
+<h2>Summary</h2>
+<table>{summary_html}</table>
+{doc_chart}
+{token_chart}
+<p class="note">Document lengths use all saved documents. Token lengths use a random sample of {len(examples):,} documents (seed {seed}).</p>
+<h2>Cleaning</h2>
+{cleaning_html}
+<h2>Sample documents</h2>
+{"".join(previews) if previews else "<p>No samples available.</p>"}
 </main>
 </body>
 </html>"""
